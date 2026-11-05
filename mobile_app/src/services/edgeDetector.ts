@@ -171,7 +171,7 @@ export class LocalYoloEdgeDetector implements EdgeDetector {
 
       // 嘗試從輸出張量形狀推斷 YOLOv8 輸出佈局
       // YOLOv8n 輸出通常為 [1, 84, 8400] (classes_first) 或 [1, 8400, 84] (anchors_first)
-      const outputMeta = this.session.outputs[0];
+      const outputMeta = (this.session as any).outputs?.[0];
       if (outputMeta && outputMeta.dimensions) {
         const dims = outputMeta.dimensions as number[];
         if (dims.length === 3 && dims[1] === 8400 && dims[2] === 84) {

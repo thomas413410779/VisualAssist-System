@@ -21,7 +21,7 @@ if ($PSScriptRoot) {
 Write-Host ""
 Write-Host "==============================================================================" -ForegroundColor Cyan
 Write-Host "               ESP32-S3 胸前相機韌體一鍵燒錄工具                            " -ForegroundColor White
-Write-Host "       目標 Wi-Fi：名稱 [ 00000000 ] / 密碼 [ 00000001 ]                     " -ForegroundColor Yellow
+Write-Host "       目標 Wi-Fi：名稱 [ 00000000 ] / 密碼 [ ****** ]                       " -ForegroundColor Yellow
 Write-Host "==============================================================================" -ForegroundColor Cyan
 Write-Host ""
 

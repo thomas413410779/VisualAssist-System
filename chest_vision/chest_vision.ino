@@ -21,8 +21,12 @@
 #include "soc/rtc_cntl_reg.h"
 #include "driver/i2s.h"
 
+#ifndef WIFI_SSID
 const char* WIFI_SSID = "00000000";
+#endif
+#ifndef WIFI_PASSWORD
 const char* WIFI_PASSWORD = "00000001";
+#endif
 const char* FALLBACK_AP_SSID = "BlindAssist-Camera";
 const char* FALLBACK_AP_PASSWORD = "blindassist";
 
@@ -144,10 +148,42 @@ const char* getCameraErrorDetail(esp_err_t err) {
   }
 }
 
+// 針對區域網路與本地 Web/手機客戶端進行安全 CORS 檢查
 static void addCorsHeaders(httpd_req_t* request) {
-  httpd_resp_set_hdr(request, "Access-Control-Allow-Origin", "*");
+  char origin[128] = {0};
+  bool allowOrigin = false;
+
+  // 取得請求發起端之 Origin Header
+  if (httpd_req_get_hdr_value_str(request, "Origin", origin, sizeof(origin)) == ESP_OK) {
+    // 白名單校驗：僅允許 localhost、Capacitor 原生應用程式協議與私人區域網路 IP (RFC 1918)
+    if (strstr(origin, "localhost") != nullptr ||
+        strstr(origin, "127.0.0.1") != nullptr ||
+        strstr(origin, "capacitor://") != nullptr ||
+        strstr(origin, "http://192.168.") != nullptr ||
+        strstr(origin, "https://192.168.") != nullptr ||
+        strstr(origin, "http://10.") != nullptr ||
+        strstr(origin, "https://10.") != nullptr ||
+        strstr(origin, "http://172.") != nullptr ||
+        strstr(origin, "https://172.") != nullptr) {
+      allowOrigin = true;
+    }
+  } else {
+    // 無 Origin Header（例如直接以瀏覽器網址列存取、ESP 序列監聽、cURL 或行動端非跨域連線）
+    allowOrigin = true;
+  }
+
+  if (allowOrigin) {
+    if (origin[0] != '\0') {
+      httpd_resp_set_hdr(request, "Access-Control-Allow-Origin", origin);
+      httpd_resp_set_hdr(request, "Vary", "Origin");
+    } else {
+      httpd_resp_set_hdr(request, "Access-Control-Allow-Origin", "*");
+    }
+  }
+  // 若為非受信任外部公網 Origin（如惡意網站發動之跨網竊聽請求），則不予附帶 Access-Control-Allow-Origin 標頭，瀏覽器同源政策即時阻擋
+
   httpd_resp_set_hdr(request, "Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  httpd_resp_set_hdr(request, "Access-Control-Allow-Headers", "*");
+  httpd_resp_set_hdr(request, "Access-Control-Allow-Headers", "Content-Type, Range, User-Agent, X-Requested-With");
   httpd_resp_set_hdr(request, "Cache-Control", "no-store, no-cache, must-revalidate");
 }
 
@@ -676,7 +712,7 @@ static const char* getWiFiStatusDescription(wl_status_t status) {
 static void connectWiFi() {
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  Serial.printf("[NET] 正在連線至 Wi-Fi: '%s' (密碼: %s)", WIFI_SSID, WIFI_PASSWORD);
+  Serial.printf("[NET] 正在連線至 Wi-Fi: '%s' (密碼: ******)\n", WIFI_SSID);
 
   const uint32_t deadline = millis() + 15000;
   while (WiFi.status() != WL_CONNECTED && millis() < deadline) {
@@ -712,7 +748,7 @@ static void connectWiFi() {
     Serial.println("==================================================");
     Serial.println("[OK] 備用 Wi-Fi 熱點已建立！");
     Serial.printf("  - 熱點名稱 (SSID): %s\n", FALLBACK_AP_SSID);
-    Serial.printf("  - 熱點密碼       : %s\n", FALLBACK_AP_PASSWORD);
+    Serial.printf("  - 熱點密碼       : (已遮蔽)\n");
     Serial.printf("  - 相機網址       : http://%s/\n", WiFi.softAPIP().toString().c_str());
     Serial.println("  * 請使用手機 Wi-Fi 連接此熱點即可無線使用 *");
     Serial.println("==================================================");

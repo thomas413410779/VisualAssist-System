@@ -1,4 +1,23 @@
-const GEMINI_API_KEY = (import.meta.env.VITE_GEMINI_API_KEY as string | undefined) || '';
+export const GEMINI_API_KEY_STORAGE_KEY = 'visual-assist-gemini-key';
+
+export function getGeminiApiKey(): string {
+  if (typeof window !== 'undefined') {
+    const userKey = localStorage.getItem(GEMINI_API_KEY_STORAGE_KEY);
+    if (userKey && userKey.trim()) return userKey.trim();
+  }
+  return (import.meta.env.VITE_GEMINI_API_KEY as string | undefined) || '';
+}
+
+export function setGeminiApiKey(key: string): void {
+  if (typeof window !== 'undefined') {
+    if (!key.trim()) {
+      localStorage.removeItem(GEMINI_API_KEY_STORAGE_KEY);
+    } else {
+      localStorage.setItem(GEMINI_API_KEY_STORAGE_KEY, key.trim());
+    }
+  }
+}
+
 const GEMINI_MODEL = (import.meta.env.VITE_GEMINI_MODEL as string | undefined) || 'gemini-flash-latest';
 
 export interface GeminiQaResult {
@@ -65,8 +84,9 @@ export async function askGeminiWithImageAndAudio(
   audioBlob?: Blob | null,
   textQuestion?: string
 ): Promise<GeminiQaResult> {
-  if (!GEMINI_API_KEY || GEMINI_API_KEY === 'replace_with_your_key') {
-    throw new Error('尚未設定 VITE_GEMINI_API_KEY；請先在 mobile_app/.env 填入你的 Gemini API Key。');
+  const apiKey = getGeminiApiKey();
+  if (!apiKey || apiKey === 'replace_with_your_key' || apiKey === 'your_gemini_api_key_here') {
+    throw new Error('尚未設定 Gemini API Key；請在網頁右上角「設定 API Key」輸入您的 Google AI Studio API Key。');
   }
 
   const parts: Array<{ text?: string; inline_data?: { mime_type: string; data: string } }> = [];
@@ -121,7 +141,7 @@ export async function askGeminiWithImageAndAudio(
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-goog-api-key': GEMINI_API_KEY,
+          'X-goog-api-key': apiKey,
         },
         signal: controller.signal,
         body: JSON.stringify({

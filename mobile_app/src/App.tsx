@@ -11,6 +11,8 @@ import {
 import {
   describeImageWithGemini,
   askGeminiWithImageAndAudio,
+  getGeminiApiKey,
+  setGeminiApiKey,
 } from './services/geminiService';
 import { cancelSpeech, speak, speakResponse } from './services/ttsService';
 import {
@@ -38,9 +40,9 @@ interface ConversationItem {
 
 function App() {
   const [cameraUrl, setCameraUrl] = useState(() => {
-    const targetIp = 'http://172.18.71.134';
+    const targetIp = 'http://10.154.175.134';
     const saved = localStorage.getItem(CAMERA_URL_STORAGE_KEY);
-    if (!saved || saved.includes('192.168.0.164') || saved.includes('192.168.4.')) {
+    if (!saved || saved.includes('192.168.0.164') || saved.includes('192.168.4.') || saved.includes('172.18.71.')) {
       localStorage.setItem(CAMERA_URL_STORAGE_KEY, targetIp);
       return targetIp;
     }
@@ -49,6 +51,8 @@ function App() {
   
   // Layer 0: Chest Hardware Emergency Brake Telemetry
   const [chestTelemetry, setChestTelemetry] = useState<ChestTelemetry>(DEFAULT_CHEST_TELEMETRY);
+  const [apiKeyInput, setApiKeyInput] = useState(() => getGeminiApiKey());
+  const [showKeyModal, setShowKeyModal] = useState(false);
   const [chestStatus, setChestStatus] = useState<ChestStatus | null>(null);
 
   // Layer 1: Edge YOLO Detection State (預設暫停，避免自動持續分析)
@@ -500,6 +504,22 @@ function App() {
             type="button"
             className="secondary btn-small"
             style={{
+              background: '#1e293b',
+              color: apiKeyInput ? '#4ade80' : '#f59e0b',
+              border: apiKeyInput ? '1px solid #16a34a' : '1px solid #d97706',
+              fontWeight: 'bold',
+              cursor: 'pointer',
+              padding: '6px 12px',
+              borderRadius: '20px',
+            }}
+            onClick={() => setShowKeyModal((prev) => !prev)}
+          >
+            🔑 {apiKeyInput ? 'API Key 已配置' : '⚠️ 設定 API Key'}
+          </button>
+          <button
+            type="button"
+            className="secondary btn-small"
+            style={{
               background: '#991b1b',
               color: '#ffffff',
               border: '1px solid #dc2626',
@@ -530,6 +550,58 @@ function App() {
           </div>
         </div>
       </header>
+
+      {showKeyModal && (
+        <section className="card" style={{ marginBottom: '18px', border: '1px solid #38bdf8', background: '#0c1b30' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+            <h3 style={{ margin: 0, color: '#38bdf8' }}>🔑 Google Gemini API Key 安全設定</h3>
+            <button
+              type="button"
+              className="secondary btn-small"
+              onClick={() => setShowKeyModal(false)}
+            >
+              ✕ 關閉
+            </button>
+          </div>
+          <p style={{ fontSize: '13px', color: '#94a3b8', margin: '0 0 12px' }}>
+            安全防護：您的 API Key 將僅保存在本機瀏覽器的 <code>localStorage</code> 中，絕不上傳至伺服器或被打包至公開檔案中。
+          </p>
+          <div style={{ display: 'flex', gap: '10px' }}>
+            <input
+              type="password"
+              placeholder="請貼上您的 Google AI Studio API Key (AIzaSy... 或 AQ....)"
+              value={apiKeyInput}
+              onChange={(e) => setApiKeyInput(e.target.value)}
+              style={{ flex: 1 }}
+            />
+            <button
+              type="button"
+              className="primary"
+              onClick={() => {
+                setGeminiApiKey(apiKeyInput);
+                setShowKeyModal(false);
+                setLastEvent(apiKeyInput ? '✅ Gemini API Key 已成功儲存至本機！' : 'ℹ️ 已清除本機 API Key');
+              }}
+            >
+              儲存
+            </button>
+            {apiKeyInput && (
+              <button
+                type="button"
+                className="secondary"
+                style={{ color: '#ef4444', borderColor: '#ef4444' }}
+                onClick={() => {
+                  setApiKeyInput('');
+                  setGeminiApiKey('');
+                  setLastEvent('ℹ️ 已清除本機 Gemini API Key');
+                }}
+              >
+                清除
+              </button>
+            )}
+          </div>
+        </section>
+      )}
 
       {error && <section className="error-banner" role="alert">{error}</section>}
 
