@@ -14,7 +14,7 @@ import {
   getGeminiApiKey,
   setGeminiApiKey,
 } from './services/geminiService';
-import { cancelSpeech, speak, speakResponse } from './services/ttsService';
+import { cancelSpeech, playTone, speak, speakResponse } from './services/ttsService';
 import {
   LocalYoloEdgeDetector,
   type Detection,
@@ -24,11 +24,11 @@ import {
 import {
   DEFAULT_CHEST_TELEMETRY,
   type ChestTelemetry,
-  type GeminiDescription,
 } from './types';
 import './styles.css';
 
 const CAMERA_URL_STORAGE_KEY = 'visual-assist-camera-url';
+const DEFAULT_CAMERA_URL = 'http://visualassist.local';
 
 interface ConversationItem {
   id: string;
@@ -40,19 +40,19 @@ interface ConversationItem {
 
 function App() {
   const [cameraUrl, setCameraUrl] = useState(() => {
-    const targetIp = 'http://10.154.175.134';
     const saved = localStorage.getItem(CAMERA_URL_STORAGE_KEY);
-    if (!saved || saved.includes('192.168.0.164') || saved.includes('192.168.4.') || saved.includes('172.18.71.')) {
-      localStorage.setItem(CAMERA_URL_STORAGE_KEY, targetIp);
-      return targetIp;
+    // 若為早期測試硬編碼之舊固定 IP，平滑遷移為 mDNS 預設網域名稱
+    if (saved && (saved.includes('192.168.0.164') || saved.includes('10.154.175.134'))) {
+      localStorage.setItem(CAMERA_URL_STORAGE_KEY, DEFAULT_CAMERA_URL);
+      return DEFAULT_CAMERA_URL;
     }
-    return saved || targetIp;
+    return saved || DEFAULT_CAMERA_URL;
   });
   
   // Layer 0: Chest Hardware Emergency Brake Telemetry
   const [chestTelemetry, setChestTelemetry] = useState<ChestTelemetry>(DEFAULT_CHEST_TELEMETRY);
   const [apiKeyInput, setApiKeyInput] = useState(() => getGeminiApiKey());
-  const [showKeyModal, setShowKeyModal] = useState(false);
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [chestStatus, setChestStatus] = useState<ChestStatus | null>(null);
 
   // Layer 1: Edge YOLO Detection State (預設暫停，避免自動持續分析)
@@ -68,7 +68,6 @@ function App() {
 
   // Layer 2: Cloud Gemini Description & Voice Q&A State
   const [describing, setDescribing] = useState(false);
-  const [, setDescription] = useState<GeminiDescription | null>(null);
   const [conversation, setConversation] = useState<ConversationItem[]>([]);
   const [textQuestion, setTextQuestion] = useState('');
   const [useChestSpeaker, setUseChestSpeaker] = useState(true);
@@ -256,7 +255,6 @@ function App() {
         timestamp: Date.now(),
       };
       setConversation((prev) => [newEntry, ...prev.slice(0, 10)]);
-      setDescription({ text: qaResult.answer, generatedAt: Date.now() });
       setLastEvent(`🎙️ 使用者問：「${qaResult.userQuestion}」 ➔ AI 回答：「${qaResult.answer}」`);
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : '語音問答失敗';
@@ -357,9 +355,6 @@ function App() {
 
       if (generation !== analysisGenerationRef.current) return;
 
-      const nextDescription = { text: qaResult.answer, generatedAt: Date.now() };
-      setDescription(nextDescription);
-
       // 智慧語音輸出：優先推播給 ESP32 胸前板喇叭播放
       speakWithCooldown(qaResult.answer, useChestSpeaker, (s) => setLastEvent(s));
 
@@ -449,6 +444,10 @@ function App() {
         if (failCount >= 3) {
           setChestTelemetry((prev) => ({ ...prev, connected: false }));
         }
+        // 連續失敗 4 次時，在背景自動觸發一次探測，看相機是否已切換至 mDNS 或熱點
+        if (failCount === 4 && !isProbingRef.current) {
+          void autoDiscoverCamera(false);
+        }
       } finally {
         if (isMounted) {
           timerId = window.setTimeout(pollStatus, 800); // 間隔 800ms，給 ESP32 充足餘裕
@@ -464,19 +463,113 @@ function App() {
     };
   }, [cameraUrl, demoMode]);
 
-  function saveCameraUrl() {
-    const normalized = cameraUrl.trim().replace(/\/$/, '');
-    setCameraUrl(normalized);
-    localStorage.setItem(CAMERA_URL_STORAGE_KEY, normalized);
-    setLastEvent(`已儲存胸前相機位址：${normalized}`);
-  }
+  const isProbingRef = useRef<boolean>(false);
 
-  function stopAllSpeech() {
+  // 自動動態探測胸前相機 IP / mDNS 網址
+  const autoDiscoverCamera = async (isManual = false): Promise<boolean> => {
+    if (isProbingRef.current) return false;
+    isProbingRef.current = true;
+    if (isManual) {
+      announceFeedback('正在自動搜尋胸前相機中…', 600);
+    }
+
+    const candidateUrls = [
+      'http://visualassist.local', // 1. mDNS 區網網域名稱 (優先，免固定 IP)
+      'http://192.168.4.1',        // 2. 戶外 SoftAP 熱點固定位址
+      cameraUrl,                  // 3. 當前設定值
+      localStorage.getItem(CAMERA_URL_STORAGE_KEY) || '',
+    ].filter((u, i, arr) => u && arr.indexOf(u) === i);
+
+    for (const candidate of candidateUrls) {
+      const normalized = candidate.trim().replace(/\/$/, '');
+      if (!normalized) continue;
+      try {
+        const controller = new AbortController();
+        const tid = setTimeout(() => controller.abort(), 1200);
+        const res = await fetch(`${normalized}/status`, {
+          method: 'GET',
+          cache: 'no-store',
+          signal: controller.signal,
+        });
+        clearTimeout(tid);
+        if (res.ok) {
+          const data = await res.json();
+          if (typeof data.triggerCounter === 'number') {
+            applyCameraUrl(normalized);
+            const typeStr = normalized.includes('visualassist.local')
+              ? 'mDNS 區域網域'
+              : normalized.includes('192.168.4.')
+              ? '戶外熱點'
+              : '區域 IP';
+            announceFeedback(`已自動連線至胸前相機 (${typeStr})`, 750, [50, 50]);
+            isProbingRef.current = false;
+            return true;
+          }
+        }
+      } catch {
+        // 繼續嘗試下一個候選位址
+      }
+    }
+
+    isProbingRef.current = false;
+    if (isManual) {
+      announceFeedback('未搜尋到胸前相機，請確認 ESP32 電源與連線', 350, [100]);
+    }
+    return false;
+  };
+
+  // 開機 1.5 秒後，若尚未連線成功則自動背景發起一次相機探測
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (!chestTelemetry.connected && !isProbingRef.current) {
+        void autoDiscoverCamera(false);
+      }
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, []);
+
+  // 盲人專用：即時觸覺 (震動) 與聽覺 (音效 + 語音播報)
+  const announceFeedback = (text: string, toneFreq = 600, haptic: number | number[] = 50) => {
+    playTone(toneFreq, 70);
+    if (typeof navigator !== 'undefined' && navigator.vibrate) {
+      try {
+        navigator.vibrate(haptic);
+      } catch {
+        // ignore
+      }
+    }
+    speak(text, 'urgent');
+    setLastEvent(text);
+  };
+
+  const handleStopAll = () => {
+    setTrackingEnabled(false);
+    setDescribing(false);
+    analysisGenerationRef.current += 1;
+    describingRef.current = false;
+    isHandlingVoiceRef.current = false;
+    inferenceInFlightRef.current = false;
     cancelSpeech();
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.stop();
+      } catch {
+        // ignore
+      }
+    }
+    setIsListening(false);
     systemSpeakingRef.current = false;
     playbackCooldownUntilRef.current = 0;
-    setLastEvent('已停止所有語音播報');
-  }
+    announceFeedback('已靜音，已停止所有分析與語音', 300, 100);
+  };
+
+  const handleReportStatus = () => {
+    const connStr = chestTelemetry.connected ? '胸前相機已連線' : '胸前相機離線';
+    const distStr = `前方距離約 ${Math.round(chestTelemetry.ultrasonicCm)} 公分`;
+    const yoloStr = trackingEnabled ? '避障防撞功能運作中' : '避障防撞已暫停';
+    const statusMsg = `系統狀態：${connStr}，${distStr}，${yoloStr}。`;
+    announceFeedback(statusMsg, 750, [60, 60]);
+  };
 
   // 統一語音播放包裝：播放時設置系統說話狀態，播放後啟動冷卻期防止回饋循環
   function speakWithCooldown(text: string, useChest: boolean, onStatus?: (msg: string) => void) {
@@ -492,498 +585,467 @@ function App() {
   }
 
   return (
-    <main className="app-shell">
-      <header className="topbar">
-        <div>
-          <p className="eyebrow">VISUAL ASSIST · WEARABLE SYSTEM</p>
-          <h1>穿戴式視覺輔助系統</h1>
-          <p className="subtitle">第0層胸前急煞 + 第1層手機本地YOLO動態追蹤 + 第2層按需雲端認知</p>
-        </div>
-        <div className="status-pill-group">
-          <button
-            type="button"
-            className="secondary btn-small"
-            style={{
-              background: '#1e293b',
-              color: apiKeyInput ? '#4ade80' : '#f59e0b',
-              border: apiKeyInput ? '1px solid #16a34a' : '1px solid #d97706',
-              fontWeight: 'bold',
-              cursor: 'pointer',
-              padding: '6px 12px',
-              borderRadius: '20px',
-            }}
-            onClick={() => setShowKeyModal((prev) => !prev)}
-          >
-            🔑 {apiKeyInput ? 'API Key 已配置' : '⚠️ 設定 API Key'}
-          </button>
-          <button
-            type="button"
-            className="secondary btn-small"
-            style={{
-              background: '#991b1b',
-              color: '#ffffff',
-              border: '1px solid #dc2626',
-              fontWeight: 'bold',
-              cursor: 'pointer',
-              padding: '6px 12px',
-              borderRadius: '20px',
-            }}
-            onClick={() => {
-              setTrackingEnabled(false);
-              setDescribing(false);
-              analysisGenerationRef.current += 1;
-              describingRef.current = false;
-              isHandlingVoiceRef.current = false;
-              inferenceInFlightRef.current = false;
-              cancelSpeech();
-              if (recognitionRef.current) {
-                try { recognitionRef.current.stop(); } catch {}
-              }
-              setIsListening(false);
-              setLastEvent('⏹️ 已立即停止所有 YOLO 追蹤、雲端分析與語音！');
-            }}
-          >
-            ⏹️ 一鍵停止所有分析與語音
-          </button>
-          <div className={`connection-pill ${chestTelemetry.connected ? 'online' : 'offline'}`}>
-            <span className="status-dot" /> {chestTelemetry.connected ? '胸前相機已連線' : '胸前相機離線'}
-          </div>
-        </div>
+    <main className="app-shell accessible-shell">
+      {/* 頂部極簡無障礙工具列 */}
+      <header className="accessible-topbar">
+        <button
+          type="button"
+          className="topbar-btn setting-btn"
+          aria-label="開啟系統設定"
+          onClick={() => {
+            const next = !showSettingsModal;
+            setShowSettingsModal(next);
+            announceFeedback(next ? '開啟系統設定' : '關閉設定', 650);
+          }}
+        >
+          ⚙️ 設定
+        </button>
+
+        <button
+          type="button"
+          className={`connection-pill ${chestTelemetry.connected ? 'online' : 'offline'}`}
+          aria-label={chestTelemetry.connected ? '胸前相機連線正常，點擊播報' : '胸前相機未連線，點擊播報'}
+          onClick={() => {
+            announceFeedback(
+              chestTelemetry.connected
+                ? '胸前相機連線正常，超音波與即時影像運作中'
+                : '胸前相機離線，請檢查 ESP32 電源與 Wi-Fi 連線',
+              600
+            );
+          }}
+        >
+          <span className="status-dot" />
+          <span>{chestTelemetry.connected ? '相機已連線' : '相機離線'}</span>
+        </button>
+
+        <button
+          type="button"
+          className="topbar-btn stop-btn"
+          aria-label="停止所有語音與分析"
+          onClick={handleStopAll}
+        >
+          ⏹️ 停止
+        </button>
       </header>
 
-      {showKeyModal && (
-        <section className="card" style={{ marginBottom: '18px', border: '1px solid #38bdf8', background: '#0c1b30' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-            <h3 style={{ margin: 0, color: '#38bdf8' }}>🔑 Google Gemini API Key 安全設定</h3>
+      {/* 系統設定彈窗 (收納所有次要與工程除錯按鈕) */}
+      {showSettingsModal && (
+        <section className="settings-modal-card" role="dialog" aria-modal="true" aria-label="系統設定與維護">
+          <div className="settings-modal-header">
+            <h3>⚙️ 系統設定與工程維護</h3>
             <button
               type="button"
               className="secondary btn-small"
-              onClick={() => setShowKeyModal(false)}
+              onClick={() => {
+                setShowSettingsModal(false);
+                announceFeedback('關閉設定', 500);
+              }}
             >
               ✕ 關閉
             </button>
           </div>
-          <p style={{ fontSize: '13px', color: '#94a3b8', margin: '0 0 12px' }}>
-            安全防護：您的 API Key 將僅保存在本機瀏覽器的 <code>localStorage</code> 中，絕不上傳至伺服器或被打包至公開檔案中。
-          </p>
-          <div style={{ display: 'flex', gap: '10px' }}>
-            <input
-              type="password"
-              placeholder="請貼上您的 Google AI Studio API Key (AIzaSy... 或 AQ....)"
-              value={apiKeyInput}
-              onChange={(e) => setApiKeyInput(e.target.value)}
-              style={{ flex: 1 }}
-            />
-            <button
-              type="button"
-              className="primary"
-              onClick={() => {
-                setGeminiApiKey(apiKeyInput);
-                setShowKeyModal(false);
-                setLastEvent(apiKeyInput ? '✅ Gemini API Key 已成功儲存至本機！' : 'ℹ️ 已清除本機 API Key');
-              }}
-            >
-              儲存
-            </button>
-            {apiKeyInput && (
+
+          <div className="settings-section">
+            <h4>🔑 Google Gemini API Key</h4>
+            <div className="settings-row">
+              <input
+                type="password"
+                placeholder="貼上 AI Studio API Key (AIzaSy...)"
+                value={apiKeyInput}
+                onChange={(e) => setApiKeyInput(e.target.value)}
+              />
               <button
                 type="button"
-                className="secondary"
-                style={{ color: '#ef4444', borderColor: '#ef4444' }}
+                className="primary"
                 onClick={() => {
-                  setApiKeyInput('');
-                  setGeminiApiKey('');
-                  setLastEvent('ℹ️ 已清除本機 Gemini API Key');
+                  setGeminiApiKey(apiKeyInput);
+                  announceFeedback(apiKeyInput ? 'API Key 已儲存' : '已清除 API Key', 700);
                 }}
               >
-                清除
+                儲存
               </button>
-            )}
-          </div>
-        </section>
-      )}
-
-      {error && <section className="error-banner" role="alert">{error}</section>}
-
-      {/* 第 0 層：胸前保命急煞 (硬體反射神經) */}
-      <section className={`danger-panel ${chestTelemetry.emergencyBrake ? 'critical' : 'safe'}`} aria-live="assertive">
-        <div>
-          <div className="layer-badge">第 0 層 · 胸前反射急煞 (&lt; 30ms)</div>
-          <h2>{chestTelemetry.emergencyBrake ? '急煞警報！前方緊急障礙！' : '前方安全，未達急煞門檻'}</h2>
-          <p>
-            {chestTelemetry.emergencyBrake
-              ? '胸前超音波測得小於 80cm 近迫障礙物，硬體蜂鳴器／震動已直接觸發急煞！'
-              : '胸前超音波持續監控中，前方距離安全，系統保持正常通行。'}
-          </p>
-        </div>
-        <div className="danger-number">
-          <strong>{Math.round(chestTelemetry.ultrasonicCm)}</strong>
-          <span>cm</span>
-        </div>
-      </section>
-
-      <div className="main-grid">
-        {/* 第 1 層：手機本地 YOLO 動態視覺感知卡片 */}
-        <section className="card camera-card">
-          <div className="card-heading">
-            <div>
-              <div className="layer-badge layer-1">第 1 層 · 手機邊緣動態 YOLO (15~30 FPS)</div>
-              <h2>即時視野與動態追蹤</h2>
-            </div>
-            <div className="badge-group">
-              <span className={`tag ${trackingEnabled ? 'active-tag' : ''}`}>
-                {trackingEnabled ? 'YOLO 追蹤中' : '已暫停追蹤'}
-              </span>
-              <span className={`tag ${isRealModel ? 'active-tag' : ''}`}>
-                {isRealModel ? '⚡ ONNX WebGL' : '🛠️ 模擬備援'}
-              </span>
-              <span className="tag">MJPEG</span>
-              {trackingEnabled && lastInferenceMs > 0 && (
-                <span className="tag" style={{ fontSize: '11px' }}>
-                  ⏱️ {lastInferenceMs.toFixed(0)}ms
-                </span>
+              {apiKeyInput && (
+                <button
+                  type="button"
+                  className="secondary danger-btn"
+                  onClick={() => {
+                    setApiKeyInput('');
+                    setGeminiApiKey('');
+                    announceFeedback('已清除 API Key', 400);
+                  }}
+                >
+                  清除
+                </button>
               )}
             </div>
           </div>
 
-          <div className="stream-container">
-            {/* 安全錐指示標尺 */}
-            <div className="spatial-guide-bar">
-              <span className="zone-indicator left">左側</span>
-              <span className="zone-indicator center active">中央安全錐</span>
-              <span className="zone-indicator right">右側</span>
+          <div className="settings-section">
+            <h4>📷 胸前 ESP32 相機位址 (IP)</h4>
+            <div className="settings-row">
+              <input
+                value={cameraUrl}
+                onChange={(e) => setCameraUrl(e.target.value)}
+                placeholder="http://visualassist.local"
+              />
+              <button
+                type="button"
+                className="primary"
+                onClick={() => {
+                  applyCameraUrl(cameraUrl);
+                  announceFeedback('已套用相機位址', 600);
+                }}
+              >
+                套用
+              </button>
             </div>
-
-            <div className="stream-frame">
-              {cameraUrl ? (
-                <img
-                  ref={streamImgRef}
-                  className="camera-stream"
-                  src={cameraStreamUrl(cameraUrl)}
-                  alt="胸前 ESP32 即時畫面"
-                  crossOrigin="anonymous"
-                  onLoad={() => setStreamError(false)}
-                  onError={() => setStreamError(true)}
-                />
-              ) : (
-                <div className="empty-frame">請先輸入 ESP32 相機位址</div>
-              )}
-
-              {streamError && (
-                <div className="camera-error-hint">
-                  <h4>⚠️ 尚未接收到 ESP32 相機串流 ({cameraUrl})</h4>
-                  <p>請確認 ESP32 的連線狀態：</p>
-                  <ul>
-                    <li><b>情況 A：ESP32 剛開機或尚未連上 Wi-Fi</b><br/>請將電腦 Wi-Fi 連線至 ESP32 熱點 <b>BlindAssist-Camera</b>（密碼: <b>blindassist</b>），並點擊下方 <b>192.168.4.1</b>。</li>
-                    <li><b>情況 B：ESP32 已連線至您的 Wi-Fi (00000000)</b><br/>請確認 ESP32 分配到的實際 IP（可從手機熱點連線裝置列表查看），並在下方直接填入連線。</li>
-                  </ul>
-                  <div className="quick-ip-buttons">
-                    <button className="primary btn-small" onClick={() => applyCameraUrl('http://172.18.71.134')}>
-                      🎯 立即連線 (172.18.71.134)
-                    </button>
-                    <button className="secondary btn-small" onClick={() => applyCameraUrl('http://192.168.4.1')}>
-                      📡 熱點 AP (192.168.4.1)
-                    </button>
-                    <button className="secondary btn-small" onClick={reconnectStream}>
-                      🔄 {isReconnecting ? '連線中…' : '重新整理影像串流'}
-                    </button>
-                  </div>
-                  <div style={{ display: 'flex', gap: '8px', marginTop: '14px', justifyContent: 'center' }}>
-                    <input
-                      style={{ padding: '6px 10px', fontSize: '13px', width: '240px', borderRadius: '6px', background: '#0b1624', color: '#fff', border: '1px solid #32567a' }}
-                      value={cameraUrl}
-                      onChange={(e) => setCameraUrl(e.target.value)}
-                      placeholder="輸入 ESP32 IP，例如 http://192.168.43.50"
-                    />
-                    <button className="primary btn-small" onClick={() => applyCameraUrl(cameraUrl)}>
-                      儲存並連線
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* 疊加中央安全錐視覺標線 */}
-              <div className="safety-cone-overlay" />
-
-              {/* 即時物件邊界框繪製 */}
-              {trackingEnabled &&
-                detections.map((det) => {
-                  const [x, y, w, h] = det.bbox;
-                  return (
-                    <div
-                      key={det.id}
-                      className={`bbox-overlay ${det.threatLevel}`}
-                      style={{
-                        left: `${(x * 100).toFixed(1)}%`,
-                        top: `${(y * 100).toFixed(1)}%`,
-                        width: `${(w * 100).toFixed(1)}%`,
-                        height: `${(h * 100).toFixed(1)}%`,
-                      }}
-                    >
-                      <span className="bbox-label">
-                        {det.chineseLabel} {Math.round(det.confidence * 100)}% ({det.estimatedDistanceM}m)
-                      </span>
-                    </div>
-                  );
-                })}
+            <div className="quick-ip-buttons">
+              <button
+                type="button"
+                className="secondary btn-small"
+                onClick={() => void autoDiscoverCamera(true)}
+              >
+                🔍 自動搜尋相機
+              </button>
+              <button
+                type="button"
+                className="secondary btn-small"
+                onClick={() => applyCameraUrl('http://visualassist.local')}
+              >
+                🌐 mDNS (visualassist.local)
+              </button>
+              <button
+                type="button"
+                className="secondary btn-small"
+                onClick={() => applyCameraUrl('http://192.168.4.1')}
+              >
+                📶 戶外熱點 (192.168.4.1)
+              </button>
+              <button
+                type="button"
+                className="secondary btn-small"
+                onClick={reconnectStream}
+              >
+                🔄 重整串流
+              </button>
             </div>
           </div>
 
-          {/* 偵測物件清單 */}
-          <div className="detection-list">
-            <strong>目前視野動態物件：</strong>
-            {detections.length === 0 ? (
-              <span className="no-detection">無重大近距障礙</span>
-            ) : (
-              detections.map((det) => (
-                <span key={det.id} className={`detection-pill ${det.threatLevel}`}>
-                  {det.chineseLabel} · {det.zone === 'center' ? '正前方' : det.zone === 'left' ? '左側' : '右側'} ({det.estimatedDistanceM}m)
-                </span>
-              ))
-            )}
-          </div>
-
-          <div className="button-row">
-            <button
-              className={trackingEnabled ? 'secondary' : 'primary'}
-              onClick={() => {
-                const nextState = !trackingEnabled;
-                setTrackingEnabled(nextState);
-                if (!nextState) {
-                  setDetections([]);
-                  cancelSpeech();
-                  setLastEvent('⏹️ 已暫停 YOLO 即時追蹤與警報語音');
-                } else {
-                  setLastEvent('▶️ 已啟動 YOLO 即時動態感知追蹤');
-                }
-              }}
-            >
-              {trackingEnabled ? '⏹️ 暫停 YOLO 追蹤' : '▶️ 啟動 YOLO 追蹤'}
-            </button>
-            <button
-              className={`secondary ${demoMode ? 'selected' : ''}`}
-              onClick={() => setDemoMode((value) => !value)}
-            >
-              {demoMode ? '關閉展示模式' : '啟用展示模式'}
-            </button>
-          </div>
-
-          <div className="form-row">
-            <label htmlFor="camera-url">相機位址</label>
-            <input
-              id="camera-url"
-              value={cameraUrl}
-              onChange={(e) => setCameraUrl(e.target.value)}
-              placeholder="http://192.168.4.1"
-            />
-            <button className="secondary" onClick={saveCameraUrl}>儲存</button>
-          </div>
-        </section>
-
-        {/* 第 2 層：雲端多模態 AI 認知問答卡片 (雙向語音問答大腦) */}
-        <section className="card cloud-card">
-          <div className="card-heading">
-            <div>
-              <div className="layer-badge layer-2">第 2 層 · 雲端認知大腦 (按需多模態問答)</div>
-              <h2>全景情境與雙向語音提問</h2>
-            </div>
-            <div className="badge-group">
-              <span className={`tag ${chestStatus?.isRecording ? 'critical' : ''}`}>
-                {chestStatus?.isRecording ? '🔴 胸前錄音中…' : chestStatus?.micReady ? '🎙️ PDM 麥克風就緒' : '麥克風未偵測'}
-              </span>
-              <span className="tag">
-                {chestStatus?.speakerReady ? '🔊 喇叭擴大機' : 'Gemini 2.5'}
-              </span>
-            </div>
-          </div>
-
-          <p className="cloud-explain">
-            本層專為讀取<strong>店家招牌、紅綠燈秒數、環境全景敘事與尋物</strong>設計。
-          </p>
-
-          <div className="voice-tip-box" style={{ borderLeft: '4px solid #10b981', background: 'rgba(16, 185, 129, 0.1)' }}>
-            <span className="voice-tip-icon">🎯</span>
-            <div className="voice-tip-text">
-              <strong>純按鍵觸發模式已生效：</strong>
-              系統平常保持完全靜態待命（絕對不會自動循環分析）。<strong>只有在您按住板子背後的 <code>BOOT (GPIO 0)</code> 鍵提問、放開後，AI 才會啟動分析一次並直接由胸前板喇叭回答！</strong>
-            </div>
-          </div>
-
-          {/* 🔊 語音輸出目標與免手按語音開關 */}
-          <div className="voice-mode-toolbar">
-            <div className="speaker-target-row">
-              <span className="toolbar-label">🔊 語音播放目標：</span>
+          <div className="settings-section">
+            <h4>🔊 語音播放輸出目標</h4>
+            <div className="settings-row">
               <button
                 type="button"
                 className={`target-pill ${useChestSpeaker ? 'active' : ''}`}
-                onClick={() => setUseChestSpeaker(true)}
+                onClick={() => {
+                  setUseChestSpeaker(true);
+                  announceFeedback('已切換為胸前板喇叭播放', 650);
+                }}
               >
                 🔊 胸前板喇叭 (MAX98357)
               </button>
               <button
                 type="button"
                 className={`target-pill ${!useChestSpeaker ? 'active' : ''}`}
-                onClick={() => setUseChestSpeaker(false)}
+                onClick={() => {
+                  setUseChestSpeaker(false);
+                  announceFeedback('已切換為手機喇叭播放', 650);
+                }}
               >
-                📱 手機/電腦喇叭
+                📱 手機喇叭
               </button>
+            </div>
+          </div>
+
+          <div className="settings-section">
+            <h4>🛠️ 硬體檢測與展示模式</h4>
+            <div className="quick-ip-buttons">
               <button
                 type="button"
-                className="target-pill"
-                style={{ background: '#2563eb', color: '#ffffff', border: '1px solid #3b82f6', fontWeight: 'bold' }}
+                className="secondary btn-small"
                 onClick={async () => {
-                  setLastEvent('🔊 正在發送嗶聲測試至胸前板喇叭…');
+                  announceFeedback('正在發送嗶聲測試', 700);
                   const ok = await triggerChestBeep(cameraUrl);
-                  setLastEvent(ok ? '🔊 [測試成功] 胸前板喇叭已發出嗶聲提示！' : '❌ 胸前板喇叭無回應，請確認相機連線。');
+                  announceFeedback(ok ? '胸前板嗶聲成功' : '胸前板喇叭無回應', ok ? 800 : 350);
                 }}
               >
                 🎵 測試嗶聲
               </button>
               <button
                 type="button"
-                className="target-pill"
-                style={{ background: '#059669', color: '#ffffff', border: '1px solid #10b981', fontWeight: 'bold' }}
-                onClick={async () => {
-                  setLastEvent('🗣️ 正在合成語音並推播至胸前喇叭…');
-                  speakWithCooldown('視覺輔助系統已就緒，我可以為您報路', true, (msg) => setLastEvent(msg));
+                className="secondary btn-small"
+                onClick={() => {
+                  speakWithCooldown('系統語音測試正常，我可以為您報路', useChestSpeaker, (m) => setLastEvent(m));
                 }}
               >
-                🗣️ 測試真人語音說話
+                🗣️ 測試真人語音
+              </button>
+              <button
+                type="button"
+                className={`secondary btn-small ${demoMode ? 'selected' : ''}`}
+                onClick={() => {
+                  const next = !demoMode;
+                  setDemoMode(next);
+                  announceFeedback(next ? '已啟用展示模擬模式' : '已關閉展示模式', 600);
+                }}
+              >
+                {demoMode ? '關閉展示模式' : '啟用展示模式'}
               </button>
             </div>
-
-            <button
-              type="button"
-              className={`mic-live-btn ${isListening ? 'listening' : ''}`}
-              onClick={toggleListening}
-              disabled={describing}
-            >
-              {isListening ? '🔴 正在聆聽您的問題… (說完自動拍照提問)' : '🎙️ 開啟免手按語音提問 (開口直接說)'}
-            </button>
           </div>
+        </section>
+      )}
 
-          {/* 常用語音快捷提問按鈕 */}
-          <div className="quick-question-row">
-            <button
-              className="chip-btn"
-              disabled={describing}
-              onClick={() => void describeEnvironment('這家店招牌寫什麼？販賣什麼？')}
-            >
-              🏷️ 店家招牌？
-            </button>
-            <button
-              className="chip-btn"
-              disabled={describing}
-              onClick={() => void describeEnvironment('前面路口紅燈或綠燈還有幾秒？')}
-            >
-              🚦 紅綠燈秒數？
-            </button>
-            <button
-              className="chip-btn"
-              disabled={describing}
-              onClick={() => void describeEnvironment('前方地面是否有階梯、水坑或施工障礙？')}
-            >
-              🚧 路況障礙？
-            </button>
-          </div>
+      {error && <section className="error-banner" role="alert">{error}</section>}
 
-          {/* 手動輸入文字提問 */}
-          <form
-            className="question-input-row"
-            onSubmit={(e) => {
+      {/* 鏡頭畫面 (保留給陪同者、弱視與視野確認) */}
+      <section className="camera-view-container" aria-label="胸前即時視野畫面">
+        <div
+          className="stream-frame"
+          tabIndex={0}
+          role="img"
+          aria-label={`胸前即時畫面，前方距離約 ${Math.round(chestTelemetry.ultrasonicCm)} 公分`}
+          onClick={() => {
+            const cm = Math.round(chestTelemetry.ultrasonicCm);
+            const detStr = detections.length > 0
+              ? `，偵測到${detections.map((d) => d.chineseLabel).join('、')}`
+              : '，前方無重大障礙';
+            announceFeedback(`前方畫面視野，超音波測距約 ${cm} 公分${detStr}`, 500);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
               e.preventDefault();
-              if (textQuestion.trim()) {
-                void describeEnvironment(textQuestion.trim());
-              }
-            }}
-          >
-            <input
-              type="text"
-              value={textQuestion}
-              onChange={(e) => setTextQuestion(e.target.value)}
-              placeholder="輸入問題或對胸前長按提問…"
-              disabled={describing}
+              const cm = Math.round(chestTelemetry.ultrasonicCm);
+              const detStr = detections.length > 0
+                ? `，偵測到${detections.map((d) => d.chineseLabel).join('、')}`
+                : '，前方無重大障礙';
+              announceFeedback(`前方畫面視野，超音波測距約 ${cm} 公分${detStr}`, 500);
+            }
+          }}
+        >
+          {cameraUrl ? (
+            <img
+              ref={streamImgRef}
+              className="camera-stream"
+              src={cameraStreamUrl(cameraUrl)}
+              alt="胸前即時視野畫面"
+              crossOrigin="anonymous"
+              onLoad={() => setStreamError(false)}
+              onError={() => setStreamError(true)}
             />
-            <button type="submit" className="primary" disabled={describing || !textQuestion.trim()}>
-              {describing ? '分析中…' : '提問'}
-            </button>
-          </form>
+          ) : (
+            <div className="empty-frame">相機位址未設定</div>
+          )}
 
-          <button
-            className={`wide trigger-btn ${describing ? 'danger' : 'secondary'}`}
-            onClick={() => {
-              if (describing) {
-                setDescribing(false);
-                isHandlingVoiceRef.current = false;
-                cancelSpeech();
-                setLastEvent('⏹️ 已手動取消雲端分析');
-                return;
-              }
-              void describeEnvironment();
-            }}
-            disabled={!cameraUrl && !describing}
-            style={describing ? { background: '#dc2626', color: '#ffffff', borderColor: '#b91c1c', cursor: 'pointer' } : {}}
-          >
-            {describing ? '⏹️ 雲端分析中… (點擊立即強制取消)' : '📷 單拍快門：解讀全景情境'}
-          </button>
+          {/* 中央安全錐標線 */}
+          <div className="safety-cone-overlay" />
 
-          {/* 最新提問與回答醒目焦點卡片 */}
-          {conversation.length > 0 && (
-            <div className="current-qa-card">
-              <div className="qa-bubble user">
-                <div className="qa-bubble-header">
-                  <span className="qa-role-badge user-badge">
-                    {conversation[0].type === 'voice' ? '🎙️ 您剛才問的話' : '⌨️ 您的提問'}
+          {/* YOLO 邊界框 */}
+          {trackingEnabled &&
+            detections.map((det) => {
+              const [x, y, w, h] = det.bbox;
+              return (
+                <div
+                  key={det.id}
+                  className={`bbox-overlay ${det.threatLevel}`}
+                  style={{
+                    left: `${(x * 100).toFixed(1)}%`,
+                    top: `${(y * 100).toFixed(1)}%`,
+                    width: `${(w * 100).toFixed(1)}%`,
+                    height: `${(h * 100).toFixed(1)}%`,
+                  }}
+                >
+                  <span className="bbox-label">
+                    {det.chineseLabel} {Math.round(det.confidence * 100)}% ({det.estimatedDistanceM}m)
                   </span>
                 </div>
-                <p className="qa-text user-text">「{conversation[0].question}」</p>
-              </div>
+              );
+            })}
 
-              <div className="qa-bubble ai">
-                <div className="qa-bubble-header">
-                  <span className="qa-role-badge ai-badge">🤖 Gemini 2.5 回答</span>
-                </div>
-                <p className="qa-text ai-text">{conversation[0].answer}</p>
-              </div>
+          {streamError && (
+            <div className="stream-error-overlay">
+              <p>⚠️ 鏡頭串流未連線</p>
+              <button
+                type="button"
+                className="primary btn-small"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  reconnectStream();
+                  announceFeedback('正在重新連線相機串流', 600);
+                }}
+              >
+                🔄 重新連線
+              </button>
             </div>
           )}
-
-          {/* 歷史問答對話歷程列表 */}
-          {conversation.length > 1 && (
-            <div className="conversation-panel">
-              <strong>📜 歷史問答紀錄：</strong>
-              <div className="conversation-list">
-                {conversation.slice(1).map((item) => (
-                  <div key={item.id} className="conversation-item">
-                    {item.question && (
-                      <div className="conv-question">
-                        <span className="conv-tag">{item.type === 'voice' ? '🎙️ 語音' : '⌨️ 文字'}</span>
-                        <span>{item.question}</span>
-                      </div>
-                    )}
-                    <div className="conv-answer">
-                      <span className="conv-tag ai">🤖 Gemini</span>
-                      <p>{item.answer}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </section>
-      </div>
-
-      {/* 底部狀態與控制列 */}
-      <section className="card protocol-card">
-        <div>
-          <p className="panel-kicker">系統即時日誌</p>
-          <p className="last-event-text">{lastEvent}</p>
         </div>
-        <button className="secondary" onClick={stopAllSpeech}>停止全部語音</button>
       </section>
 
-      <footer className="footer-note">
-        穿戴式視覺輔助系統原型 · 三層邊緣防護架構
+      {/* 第 0 層：前方即時距離與急煞狀態條 (可點擊播報) */}
+      <section
+        className={`accessible-distance-bar ${chestTelemetry.emergencyBrake ? 'critical' : 'safe'}`}
+        role="region"
+        aria-live="polite"
+        tabIndex={0}
+        onClick={() => {
+          const cm = Math.round(chestTelemetry.ultrasonicCm);
+          const stateStr = chestTelemetry.emergencyBrake ? '急煞危險，距離過近' : '前方安全';
+          announceFeedback(`前方障礙物距離約 ${cm} 公分，${stateStr}`, chestTelemetry.emergencyBrake ? 300 : 700, [60]);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            const cm = Math.round(chestTelemetry.ultrasonicCm);
+            const stateStr = chestTelemetry.emergencyBrake ? '急煞危險，距離過近' : '前方安全';
+            announceFeedback(`前方障礙物距離約 ${cm} 公分，${stateStr}`, chestTelemetry.emergencyBrake ? 300 : 700, [60]);
+          }
+        }}
+      >
+        <div className="distance-info">
+          <span className="distance-icon">
+            {chestTelemetry.emergencyBrake ? '🚨' : '🟢'}
+          </span>
+          <span className="distance-text">
+            {chestTelemetry.emergencyBrake
+              ? `急煞警報！前方障礙小於 80cm！(${Math.round(chestTelemetry.ultrasonicCm)} cm)`
+              : `前方安全 · 超音波距離：${Math.round(chestTelemetry.ultrasonicCm)} cm`}
+          </span>
+        </div>
+        <span className="distance-tap-hint">點擊播報</span>
+      </section>
+
+      {/* 盲人巨型觸控按鈕區 (超大觸摸面積 + 語音回饋) */}
+      <section className="accessible-buttons-panel" aria-label="盲人快捷操作區">
+        {/* 巨型按鈕 1：拍照解讀眼前環境 */}
+        <button
+          type="button"
+          className={`giant-btn giant-btn-primary ${describing ? 'danger' : ''}`}
+          aria-label={describing ? '分析中，點擊強制取消' : '拍照解讀眼前景物'}
+          onClick={() => {
+            if (describing) {
+              setDescribing(false);
+              isHandlingVoiceRef.current = false;
+              cancelSpeech();
+              announceFeedback('已手動取消雲端分析', 400, [50]);
+              return;
+            }
+            announceFeedback('正在拍照並分析眼前景物，請稍候…', 700, [70]);
+            void describeEnvironment();
+          }}
+        >
+          <span className="giant-btn-icon">{describing ? '⏹️' : '📷'}</span>
+          <div className="giant-btn-content">
+            <strong className="giant-btn-title">
+              {describing ? '分析中… (點擊立即取消)' : '拍照解讀眼前景物'}
+            </strong>
+            <span className="giant-btn-desc">
+              {describing ? '點擊立即中斷分析並安靜' : '短按拍照，AI 語音為您報路與環境描述'}
+            </span>
+          </div>
+        </button>
+
+        {/* 巨型按鈕 2：語音開口提問 */}
+        <button
+          type="button"
+          className={`giant-btn giant-btn-voice ${isListening ? 'listening' : ''}`}
+          aria-label={isListening ? '正在聆聽提問，點擊取消' : '語音提問，點擊後直接說話詢問'}
+          disabled={describing}
+          onClick={() => {
+            if (isListening) {
+              toggleListening();
+              announceFeedback('已取消語音提問', 400, [40]);
+            } else {
+              announceFeedback('正在啟動語音辨識，請直接開口提問…', 650, [40, 40]);
+              toggleListening();
+            }
+          }}
+        >
+          <span className="giant-btn-icon">{isListening ? '🔴' : '🎙️'}</span>
+          <div className="giant-btn-content">
+            <strong className="giant-btn-title">
+              {isListening ? '正在聆聽提問中… (點擊取消)' : '語音提問 (開口詢問)'}
+            </strong>
+            <span className="giant-btn-desc">
+              {isListening ? '請說出問題，說完後自動拍照分析回答' : '點擊開口說問題（例如「前面是什麼店？」）'}
+            </span>
+          </div>
+        </button>
+
+        {/* 底部雙列巨型開關 (避障防撞 + 停止語音) */}
+        <div className="giant-btn-dual-row">
+          {/* 巨型按鈕 3：避障防撞開關 (YOLO) */}
+          <button
+            type="button"
+            className={`giant-btn giant-btn-toggle ${trackingEnabled ? 'active' : 'paused'}`}
+            aria-label={`即時避障防撞功能目前${trackingEnabled ? '開啟中，點擊暫停' : '已暫停，點擊啟動'}`}
+            onClick={() => {
+              const nextState = !trackingEnabled;
+              setTrackingEnabled(nextState);
+              if (!nextState) {
+                setDetections([]);
+                cancelSpeech();
+                announceFeedback('已暫停即時避障防撞', 400, [50]);
+              } else {
+                announceFeedback('已開啟即時避障防撞動態感知', 750, [50, 50]);
+              }
+            }}
+          >
+            <span className="giant-btn-icon">{trackingEnabled ? '🛡️' : '⏸️'}</span>
+            <div className="giant-btn-content">
+              <strong className="giant-btn-title">
+                {trackingEnabled ? '避障：運作中' : '避障：已暫停'}
+              </strong>
+              <span className="giant-btn-desc">
+                {trackingEnabled ? '點擊暫停避障' : '點擊開啟避障'}
+              </span>
+            </div>
+          </button>
+
+          {/* 巨型按鈕 4：停止語音與狀態回報 */}
+          <button
+            type="button"
+            className="giant-btn giant-btn-stop"
+            aria-label="停止語音，雙擊播報系統狀態"
+            onClick={handleStopAll}
+            onDoubleClick={handleReportStatus}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              handleReportStatus();
+            }}
+          >
+            <span className="giant-btn-icon">🛑</span>
+            <div className="giant-btn-content">
+              <strong className="giant-btn-title">停止語音 / 狀態</strong>
+              <span className="giant-btn-desc">短按靜音 · 雙擊報狀態</span>
+            </div>
+          </button>
+        </div>
+      </section>
+
+      {/* 最新回答卡片 (供弱視或同伴閱讀，點擊可重新朗讀) */}
+      {conversation.length > 0 && (
+        <section
+          className="accessible-qa-card"
+          tabIndex={0}
+          role="region"
+          aria-label="AI 最新回覆，點擊重新朗讀"
+          onClick={() => {
+            announceFeedback(`重新朗讀回答：${conversation[0].answer}`, 550, [30]);
+          }}
+        >
+          <div className="accessible-qa-header">
+            <span className="qa-badge">🤖 AI 最新回答 (點擊重聽)</span>
+            {conversation[0].question && (
+              <span className="qa-user-q">問：{conversation[0].question}</span>
+            )}
+          </div>
+          <p className="accessible-qa-text">{conversation[0].answer}</p>
+        </section>
+      )}
+
+      {/* 底部即時狀態簡報 */}
+      <footer className="accessible-footer" onClick={handleReportStatus} tabIndex={0}>
+        <span className="footer-status-text">ℹ️ {lastEvent}</span>
       </footer>
     </main>
   );

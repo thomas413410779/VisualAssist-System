@@ -142,6 +142,9 @@ export class LocalYoloEdgeDetector implements EdgeDetector {
   // 上一次真實推論的耗時 (毫秒)，供 UI 顯示效能資訊
   private lastInferenceMs = 0;
 
+  // 預先分配之正規化張量緩衝區，避免每秒 ~16 幀頻繁建立引發 GC 停頓
+  private preallocatedFloat32: Float32Array | null = null;
+
   public getLastInferenceMs(): number {
     return this.lastInferenceMs;
   }
@@ -242,7 +245,10 @@ export class LocalYoloEdgeDetector implements EdgeDetector {
 
     // 將 RGBA 轉為 Float32Array [1, 3, 640, 640] 的 CHW 格式並正規化 (0.0 ~ 1.0)
     const totalPixels = this.INPUT_SIZE * this.INPUT_SIZE;
-    const float32Data = new Float32Array(3 * totalPixels);
+    if (!this.preallocatedFloat32 || this.preallocatedFloat32.length !== 3 * totalPixels) {
+      this.preallocatedFloat32 = new Float32Array(3 * totalPixels);
+    }
+    const float32Data = this.preallocatedFloat32;
 
     for (let i = 0; i < totalPixels; i++) {
       float32Data[i] = data[i * 4] / 255.0; // R
@@ -264,12 +270,17 @@ export class LocalYoloEdgeDetector implements EdgeDetector {
           this.session?.outputNames.join(', ') || '(未知)'
         }`
       );
+      try { (inputTensor as any).dispose?.(); } catch {}
       return [];
     }
 
     this.lastInferenceMs = performance.now() - inferStart;
-
-    return this.postProcessYoloV8(outputTensor.data as Float32Array);
+    const detections = this.postProcessYoloV8(outputTensor.data as Float32Array);
+    try {
+      (inputTensor as any).dispose?.();
+      (outputTensor as any).dispose?.();
+    } catch {}
+    return detections;
   }
 
   /**

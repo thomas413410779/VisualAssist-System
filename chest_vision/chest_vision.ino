@@ -14,6 +14,7 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <ESPmDNS.h>
 #include "esp_camera.h"
 #include "esp_http_server.h"
 #include "img_converters.h"
@@ -156,15 +157,17 @@ static void addCorsHeaders(httpd_req_t* request) {
   // 取得請求發起端之 Origin Header
   if (httpd_req_get_hdr_value_str(request, "Origin", origin, sizeof(origin)) == ESP_OK) {
     // 白名單校驗：僅允許 localhost、Capacitor 原生應用程式協議與私人區域網路 IP (RFC 1918)
-    if (strstr(origin, "localhost") != nullptr ||
-        strstr(origin, "127.0.0.1") != nullptr ||
-        strstr(origin, "capacitor://") != nullptr ||
-        strstr(origin, "http://192.168.") != nullptr ||
-        strstr(origin, "https://192.168.") != nullptr ||
-        strstr(origin, "http://10.") != nullptr ||
-        strstr(origin, "https://10.") != nullptr ||
-        strstr(origin, "http://172.") != nullptr ||
-        strstr(origin, "https://172.") != nullptr) {
+    if (strncmp(origin, "http://localhost", 16) == 0 ||
+        strncmp(origin, "https://localhost", 17) == 0 ||
+        strncmp(origin, "http://127.0.0.1", 16) == 0 ||
+        strncmp(origin, "http://visualassist.local", 25) == 0 ||
+        strncmp(origin, "capacitor://", 12) == 0 ||
+        strncmp(origin, "http://192.168.", 15) == 0 ||
+        strncmp(origin, "https://192.168.", 16) == 0 ||
+        strncmp(origin, "http://10.", 10) == 0 ||
+        strncmp(origin, "https://10.", 11) == 0 ||
+        strncmp(origin, "http://172.", 11) == 0 ||
+        strncmp(origin, "https://172.", 12) == 0) {
       allowOrigin = true;
     }
   } else {
@@ -501,6 +504,7 @@ static esp_err_t playHandler(httpd_req_t* request) {
                             memcmp(wavHeader + 8, "WAVE", 4) == 0;
       if (!validWav) {
         audioPlaybackBusy = false;
+        audioPlaybackActive = false;
         httpd_resp_set_status(request, "415 Unsupported Media Type");
         return httpd_resp_send(request, "{\"error\":\"INVALID_WAV\"}", HTTPD_RESP_USE_STRLEN);
       }
@@ -731,6 +735,14 @@ static void connectWiFi() {
     Serial.printf("  - 影像串流網址: http://%s/\n", WiFi.localIP().toString().c_str());
     Serial.printf("  - 單張拍照網址: http://%s/capture\n", WiFi.localIP().toString().c_str());
     Serial.printf("  - 系統遙測端點: http://%s/status\n", WiFi.localIP().toString().c_str());
+    // 啟動 mDNS 廣播 (http://visualassist.local)
+    if (MDNS.begin("visualassist")) {
+      MDNS.addService("http", "tcp", 80);
+      MDNS.addService("mjpeg", "tcp", 81);
+      Serial.println("  - mDNS 區網網址: http://visualassist.local (免固定IP)");
+    } else {
+      Serial.println("[WARNING] mDNS 廣播初始化失敗");
+    }
     Serial.println("==================================================");
     return;
   }
@@ -750,6 +762,11 @@ static void connectWiFi() {
     Serial.printf("  - 熱點名稱 (SSID): %s\n", FALLBACK_AP_SSID);
     Serial.printf("  - 熱點密碼       : (已遮蔽)\n");
     Serial.printf("  - 相機網址       : http://%s/\n", WiFi.softAPIP().toString().c_str());
+    if (MDNS.begin("visualassist")) {
+      MDNS.addService("http", "tcp", 80);
+      MDNS.addService("mjpeg", "tcp", 81);
+      Serial.println("  - mDNS 熱點網址 : http://visualassist.local");
+    }
     Serial.println("  * 請使用手機 Wi-Fi 連接此熱點即可無線使用 *");
     Serial.println("==================================================");
   } else {

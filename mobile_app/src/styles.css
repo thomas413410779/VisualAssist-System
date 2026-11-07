@@ -493,4 +493,397 @@ button:hover:not(:disabled) { transform: translateY(-1px); }
   .form-row .secondary { width: 100%; }
 }
 
+/* ==========================================================================
+   盲人無障礙極簡介面專用樣式 (Accessible Giant Buttons & High Contrast)
+   ========================================================================== */
+
+.accessible-shell {
+  max-width: 600px;
+  margin: 0 auto;
+  padding: 16px 14px 40px;
+}
+
+.accessible-topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.topbar-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 46px;
+  padding: 8px 16px;
+  font-size: 16px;
+  font-weight: 800;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+
+.topbar-btn:active {
+  transform: scale(0.96);
+}
+
+.setting-btn {
+  background: #1e293b;
+  color: #38bdf8;
+  border: 2px solid #0284c7;
+}
+
+.stop-btn {
+  background: #991b1b;
+  color: #ffffff;
+  border: 2px solid #ef4444;
+}
+
+.settings-modal-card {
+  background: #091526;
+  border: 2px solid #38bdf8;
+  border-radius: 18px;
+  padding: 18px;
+  margin-bottom: 16px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
+}
+
+.settings-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+.settings-modal-header h3 {
+  margin: 0;
+  font-size: 18px;
+  color: #38bdf8;
+}
+
+.settings-section {
+  background: #0d1e34;
+  border: 1px solid #1e3a5f;
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+}
+
+.settings-section h4 {
+  margin: 0 0 10px 0;
+  font-size: 14px;
+  color: #93c5fd;
+}
+
+.settings-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.settings-row input {
+  flex: 1;
+  min-width: 160px;
+}
+
+.danger-btn {
+  border-color: #ef4444 !important;
+  color: #ef4444 !important;
+}
+
+.camera-view-container {
+  width: 100%;
+  margin-bottom: 10px;
+}
+
+.camera-view-container .stream-frame {
+  min-height: 240px;
+  max-height: 320px;
+  cursor: pointer;
+  border: 2px solid #2b4a6d;
+}
+
+.camera-view-container .stream-frame:focus-visible {
+  outline: 3px solid #38bdf8;
+}
+
+.stream-error-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.92);
+  gap: 10px;
+  color: #fca5a5;
+  font-weight: 700;
+}
+
+/* 距離與急煞狀態條 */
+.accessible-distance-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  border-radius: 14px;
+  margin-bottom: 14px;
+  cursor: pointer;
+  user-select: none;
+  transition: transform 0.12s ease;
+}
+
+.accessible-distance-bar:active {
+  transform: scale(0.98);
+}
+
+.accessible-distance-bar:focus-visible {
+  outline: 3px solid #ffffff;
+}
+
+.accessible-distance-bar.safe {
+  background: linear-gradient(135deg, #064e3b, #022c22);
+  border: 2px solid #10b981;
+  color: #a7f3d0;
+}
+
+.accessible-distance-bar.critical {
+  background: linear-gradient(135deg, #991b1b, #450a0a);
+  border: 2px solid #ef4444;
+  color: #fee2e2;
+  animation: criticalPulse 1.2s infinite;
+}
+
+.distance-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.distance-icon {
+  font-size: 24px;
+  line-height: 1;
+}
+
+.distance-text {
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.distance-tap-hint {
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.3);
+  font-weight: 600;
+  opacity: 0.9;
+}
+
+/* 盲人巨型觸控按鈕面板 */
+.accessible-buttons-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.giant-btn {
+  width: 100%;
+  border-radius: 20px;
+  padding: 18px 20px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  text-align: left;
+  border: 3px solid transparent;
+  cursor: pointer;
+  user-select: none;
+  transition: transform 0.12s ease, box-shadow 0.15s ease;
+}
+
+.giant-btn:focus-visible {
+  outline: 4px solid #ffffff;
+  outline-offset: 2px;
+}
+
+.giant-btn:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.giant-btn-icon {
+  font-size: 40px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.giant-btn-content {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.giant-btn-title {
+  font-size: 22px;
+  font-weight: 900;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+}
+
+.giant-btn-desc {
+  font-size: 13px;
+  font-weight: 600;
+  opacity: 0.9;
+  line-height: 1.35;
+}
+
+/* 主按鈕：拍照解讀環境 */
+.giant-btn-primary {
+  min-height: 98px;
+  background: linear-gradient(135deg, #1d4ed8, #1e3a8a);
+  border-color: #60a5fa;
+  color: #ffffff;
+  box-shadow: 0 8px 24px rgba(29, 78, 216, 0.4);
+}
+
+.giant-btn-primary.danger {
+  background: linear-gradient(135deg, #dc2626, #991b1b);
+  border-color: #f87171;
+  animation: pulse-border 1.5s infinite;
+}
+
+/* 語音提問按鈕 */
+.giant-btn-voice {
+  min-height: 88px;
+  background: linear-gradient(135deg, #047857, #065f46);
+  border-color: #34d399;
+  color: #ffffff;
+  box-shadow: 0 6px 20px rgba(4, 120, 87, 0.35);
+}
+
+.giant-btn-voice.listening {
+  background: linear-gradient(135deg, #dc2626, #b91c1c);
+  border-color: #fca5a5;
+  animation: pulse-border 1.5s infinite;
+}
+
+/* 底部雙列巨型開關 */
+.giant-btn-dual-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.giant-btn-toggle {
+  min-height: 88px;
+  padding: 14px 14px;
+  gap: 10px;
+}
+
+.giant-btn-toggle .giant-btn-icon {
+  font-size: 32px;
+}
+
+.giant-btn-toggle .giant-btn-title {
+  font-size: 17px;
+}
+
+.giant-btn-toggle .giant-btn-desc {
+  font-size: 12px;
+}
+
+.giant-btn-toggle.active {
+  background: linear-gradient(135deg, #065f46, #044e39);
+  border-color: #10b981;
+  color: #ecfdf5;
+  box-shadow: 0 4px 16px rgba(16, 185, 129, 0.3);
+}
+
+.giant-btn-toggle.paused {
+  background: #1e293b;
+  border-color: #475569;
+  color: #94a3b8;
+}
+
+.giant-btn-stop {
+  min-height: 88px;
+  padding: 14px 14px;
+  gap: 10px;
+  background: linear-gradient(135deg, #991b1b, #7f1d1d);
+  border-color: #f87171;
+  color: #ffffff;
+  box-shadow: 0 4px 16px rgba(239, 68, 68, 0.35);
+}
+
+.giant-btn-stop .giant-btn-icon {
+  font-size: 32px;
+}
+
+.giant-btn-stop .giant-btn-title {
+  font-size: 17px;
+}
+
+.giant-btn-stop .giant-btn-desc {
+  font-size: 12px;
+}
+
+/* 最新回答卡片 (供弱視/重聽者) */
+.accessible-qa-card {
+  background: #0b1c31;
+  border: 2px solid #38bdf8;
+  border-radius: 16px;
+  padding: 16px;
+  margin-top: 12px;
+  cursor: pointer;
+  user-select: none;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+}
+
+.accessible-qa-card:focus-visible {
+  outline: 3px solid #ffffff;
+}
+
+.accessible-qa-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.qa-badge {
+  background: #0284c7;
+  color: #ffffff;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.qa-user-q {
+  color: #7dd3fc;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.accessible-qa-text {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.6;
+  color: #f1f5f9;
+  font-weight: 600;
+}
+
+.accessible-footer {
+  margin-top: 16px;
+  text-align: center;
+  color: #94a3b8;
+  font-size: 12px;
+  padding: 8px;
+  cursor: pointer;
+}
+
+
 

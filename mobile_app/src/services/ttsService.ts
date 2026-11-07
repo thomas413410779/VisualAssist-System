@@ -6,6 +6,55 @@ import { playAudioOnChest } from './cameraService';
 
 let lastSpokenText = '';
 let lastSpokenTime = 0;
+let sharedAudioCtx: AudioContext | null = null;
+
+function getSharedAudioContext(): AudioContext | null {
+  if (typeof window === 'undefined') return null;
+  if (!sharedAudioCtx || sharedAudioCtx.state === 'closed') {
+    const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    if (!AudioCtx) return null;
+    try {
+      sharedAudioCtx = new AudioCtx();
+    } catch {
+      return null;
+    }
+  }
+  if (sharedAudioCtx.state === 'suspended') {
+    void sharedAudioCtx.resume();
+  }
+  return sharedAudioCtx;
+}
+
+/**
+ * 播放輕脆短促的音效提示 (盲人觸控第一時間確認)
+ * 使用單例 AudioContext 避免在行動端 (iOS/Android) 頻繁建立觸發硬體上限崩潰
+ */
+export function playTone(freq = 600, durationMs = 80, type: OscillatorType = 'sine'): void {
+  try {
+    const ctx = getSharedAudioContext();
+    if (!ctx) return;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, ctx.currentTime);
+    gain.gain.setValueAtTime(0.15, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + durationMs / 1000);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + durationMs / 1000);
+    setTimeout(() => {
+      try {
+        osc.disconnect();
+        gain.disconnect();
+      } catch {
+        // ignore
+      }
+    }, durationMs + 60);
+  } catch {
+    // ignore
+  }
+}
 
 export function cancelSpeech(): void {
   if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
@@ -25,8 +74,8 @@ export function speak(text: string, priority: 'normal' | 'urgent' = 'normal'): v
   const now = Date.now();
   const cleanText = text.replace(/[*#`_~]/g, '').trim();
   
-  // 防重複與防塞車機制：若同一句話在 10 秒內重複，或前一句話尚未講完，不重複塞入佇列
-  if (cleanText === lastSpokenText && now - lastSpokenTime < 10000) {
+  // 防重複與防塞車機制：若同一句話在 10 秒內重複，且非緊急使用者按鈕，不重複塞入佇列
+  if (priority !== 'urgent' && cleanText === lastSpokenText && now - lastSpokenTime < 10000) {
     return;
   }
   
@@ -162,12 +211,13 @@ export async function speakResponse(
         onStatusUpdate?.('🔊 已透過胸前板喇叭播放回答！');
         return;
       }
-      onStatusUpdate?.('⚠️ 胸前板喇叭推播未成功，保持靜音');
+      onStatusUpdate?.('⚠️ 胸前板喇叭推播未成功，改由手機語音播放');
     } catch (e) {
       console.warn('推播至胸前板失敗:', e);
-      onStatusUpdate?.('⚠️ 胸前板語音合成失敗，保持靜音');
+      onStatusUpdate?.('⚠️ 胸前板語音合成失敗，改由手機語音播放');
     }
-    // 嚴格保證：使用者選擇胸前板時，絕對不退回電腦喇叭狂念，電腦保持完全安靜！
+    // 安全備援：若胸前板無回應或 TTS 代理失敗，自動由手機本機播報，避免視障者失去聲音導引
+    speak(text, 'normal');
     return;
   }
 
