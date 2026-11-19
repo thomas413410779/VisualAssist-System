@@ -93,8 +93,8 @@ VisualAssist_System/
 | 硬體組件 | 建議型號與規格 | 介面 / GPIO | 安全防護要求 |
 |---|---|---|---|
 | 胸前主控板 | ESP32-S3-EYE (8MB Flash + 8MB OPI PSRAM) | 板載相機 + USB CDC | 確保供電電流達 5V / 1.5A 以上 |
-| 前方急煞測距 | JSN-SR04T 防水超音波模組 | TRIG: GPIO1 / ECHO: GPIO2 | **ECHO 腳位輸出為 5V，必須串接電阻分壓降至 3.3V 後接入 ESP32** |
-| 急煞回饋輸出 | 3V 有源蜂鳴器 或 扁平震動馬達 | GPIO44 (急煞信號) | **嚴禁直接以 GPIO 供電，必須透過 MOSFET / NPN 電晶體隔離驅動** |
+| 前方急煞測距 | JSN-SR04T 防水超音波模組 (或 HC-SR04) | TRIG: GPIO44 / ECHO: GPIO43 | **Gravity 接口 (TX:44, RX:43)；若為 5V ECHO 請分壓至 3.3V** |
+| 急煞回饋輸出 | 3V 有源蜂鳴器 / 震動馬達 / 板載 LED | GPIO3 (急煞信號) | **嚴禁直接以 GPIO 供電高負載，應透過電晶體隔離驅動** |
 | 供電電源 | 5V 輕量行動電源 | Type-C USB 埠 | 獨立電路供電，避免大電流負載干擾相機運作 |
 
 ---
