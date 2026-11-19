@@ -40,6 +40,19 @@ interface ConversationItem {
 
 function App() {
   const [cameraUrl, setCameraUrl] = useState(() => {
+    // 優先讀取 URL Query 參數 (?camera=http://...)，達成啟動腳本一鍵自動注入與配對
+    try {
+      const searchParams = new URLSearchParams(window.location.search);
+      const queryCamera = searchParams.get('camera');
+      if (queryCamera) {
+        const normalized = queryCamera.startsWith('http://') || queryCamera.startsWith('https://')
+          ? queryCamera.trim().replace(/\/$/, '')
+          : `http://${queryCamera.trim().replace(/\/$/, '')}`;
+        localStorage.setItem(CAMERA_URL_STORAGE_KEY, normalized);
+        return normalized;
+      }
+    } catch {}
+
     const saved = localStorage.getItem(CAMERA_URL_STORAGE_KEY);
     // 若為早期測試硬編碼之舊固定 IP，平滑遷移為 mDNS 預設網域名稱
     if (saved && (saved.includes('192.168.0.164') || saved.includes('10.154.175.134'))) {
@@ -48,6 +61,21 @@ function App() {
     }
     return saved || DEFAULT_CAMERA_URL;
   });
+
+  // 監聽並自動更新 URL Query 注入的相機網址
+  useEffect(() => {
+    try {
+      const searchParams = new URLSearchParams(window.location.search);
+      const queryCamera = searchParams.get('camera');
+      if (queryCamera) {
+        const normalized = queryCamera.startsWith('http://') || queryCamera.startsWith('https://')
+          ? queryCamera.trim().replace(/\/$/, '')
+          : `http://${queryCamera.trim().replace(/\/$/, '')}`;
+        setCameraUrl(normalized);
+        localStorage.setItem(CAMERA_URL_STORAGE_KEY, normalized);
+      }
+    } catch {}
+  }, []);
   
   // Layer 0: Chest Hardware Emergency Brake Telemetry
   const [chestTelemetry, setChestTelemetry] = useState<ChestTelemetry>(DEFAULT_CHEST_TELEMETRY);

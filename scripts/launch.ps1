@@ -260,12 +260,57 @@ if ($detectedPorts.Count -eq 0) {
     } catch {}
 }
 
+$detectedCameraIp = $null
 if ($detectedPorts.Count -gt 0) {
     Write-Success "已偵測到電腦連接之序列埠硬體裝置："
     foreach ($p in $detectedPorts) {
         Write-Host "    -> 連接埠: $($p.Port) | 裝置描述: $($p.Name)" -ForegroundColor Green
     }
     Write-Info "ESP32-S3 開發板已透過 USB 供電/通訊中"
+
+    # 自動發送重設訊號並讀取 ESP32 鏡頭 IP 位址
+    $targetPort = $detectedPorts[0].Port
+    Write-Info "正在自動與 ESP32 ($targetPort) 連線並讀取 Wi-Fi/熱點 IP 位址 (約 6 秒)..."
+    try {
+        $sp = New-Object System.IO.Ports.SerialPort $targetPort, 115200, [System.IO.Ports.Parity]::None, 8, [System.IO.Ports.StopBits]::One
+        $sp.ReadTimeout = 600
+        $sp.Open()
+
+        # 發送 DTR/RTS 重設訊號觸發 ESP32 重新連線與輸出開機網路日誌
+        $sp.DtrEnable = $false
+        $sp.RtsEnable = $true
+        Start-Sleep -Milliseconds 200
+        $sp.RtsEnable = $false
+        Start-Sleep -Milliseconds 100
+
+        $ipDeadline = (Get-Date).AddSeconds(7)
+        while ((Get-Date) -lt $ipDeadline) {
+            try {
+                $line = $sp.ReadLine()
+                if ($line) {
+                    if ($line -match 'http://(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})') {
+                        $detectedCameraIp = "http://$($Matches[1])"
+                        break
+                    }
+                    if ($line -match 'IP\s*:\s*(http://\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})') {
+                        $matchedIp = $Matches[1]
+                        if (-not $matchedIp.StartsWith('http')) { $matchedIp = "http://$matchedIp" }
+                        $detectedCameraIp = $matchedIp
+                        break
+                    }
+                }
+            } catch {}
+        }
+        $sp.Close()
+    } catch {
+        Write-Notice "自動讀取序列埠日誌提示: $($_.Exception.Message)"
+    }
+
+    if ($detectedCameraIp) {
+        Write-Success "已自動捕獲 ESP32 鏡頭 IP 位址：$detectedCameraIp"
+    } else {
+        Write-Notice "未在時限內捕獲即時 IP，將使用預設 mDNS (http://visualassist.local)"
+    }
 } else {
     Write-Notice "目前尚未偵測到 USB 序列埠 (COM)"
     Write-Info "小提示：若您剛插入 USB 傳輸線，Windows 可能正在自動載入驅動程式；"
@@ -344,16 +389,32 @@ if ($portInUse) {
 # ------------------------------------------------------------------------------
 Write-StepHeader 5 5 "自動開啟前端操作畫面"
 
+# 若成功自動抓取到 ESP32 IP，直接將 ?camera= 參數自動注入給前端 URL
+$launchUrl = $hostUrl
+if ($detectedCameraIp) {
+    $launchUrl = "$hostUrl/?camera=$detectedCameraIp"
+}
+
 Write-Success "正在開啟預設瀏覽器進入視覺輔助系統..."
-Start-Process $hostUrl
+Start-Process $launchUrl
 
 Write-Host ""
 Write-Host "==============================================================================" -ForegroundColor Green
 Write-Host "               [系統已成功啟動！視覺輔助前瞻系統運行中]                      " -ForegroundColor White
 Write-Host "==============================================================================" -ForegroundColor Green
 Write-Host ""
-Write-Host "  * 本機畫面網址 : " -NoNewline; Write-Host "$hostUrl" -ForegroundColor Cyan
-Write-Host "  * 手機同網網址 : " -NoNewline; Write-Host "http://${localIP}:$port" -ForegroundColor Cyan
+Write-Host "  * 本機畫面網址 : " -NoNewline; Write-Host "$launchUrl" -ForegroundColor Cyan
+Write-Host "  * 手機同網網址 : " -NoNewline;
+if ($detectedCameraIp) {
+    Write-Host "http://${localIP}:${port}/?camera=$detectedCameraIp" -ForegroundColor Cyan
+} else {
+    Write-Host "http://${localIP}:${port}" -ForegroundColor Cyan
+}
+if ($detectedCameraIp) {
+    Write-Host "  * 鏡頭硬體位址 : " -NoNewline; Write-Host "$detectedCameraIp (已自動配對綁定)" -ForegroundColor Green
+} else {
+    Write-Host "  * 鏡頭預設網址 : " -NoNewline; Write-Host "http://visualassist.local (mDNS)" -ForegroundColor Gray
+}
 Write-Host ""
 Write-Host "  * 提示：" -ForegroundColor Yellow
 Write-Host "    - 您可於手機瀏覽器輸入上述「手機同網網址」，即可在手機上體驗邊緣 YOLO 輔助避障" -ForegroundColor Gray
@@ -362,7 +423,7 @@ Write-Host ""
 Write-Host "  [快捷操作選單]" -ForegroundColor Cyan
 Write-Host "    [O] 重新在瀏覽器開啟前端畫面"
 Write-Host "    [P] 查看目前連接之 USB 序列埠"
-Write-Host "    [S] 監看 ESP32 序列埠日誌 (查看 IP 位址)"
+Write-Host "    [S] 重設並監看 ESP32 序列埠日誌 (重新抓取 IP 位址)"
 Write-Host "    [Q] 關閉伺服器並結束"
 Write-Host ""
 
@@ -374,7 +435,7 @@ try {
             switch ($key) {
                 "O" {
                     Write-Info "正在重新開啟瀏覽器..."
-                    Start-Process $hostUrl
+                    Start-Process $launchUrl
                 }
                 "P" {
                     Write-Info "重新掃描序列埠..."
@@ -386,22 +447,37 @@ try {
                     }
                 }
                 "S" {
-                    Write-Info "正在監聽 ESP32 序列埠日誌 (約 4 秒)..."
+                    Write-Info "正在重設 ESP32 並監聽序列埠日誌 (約 6 秒)..."
                     $ports = Get-CimInstance Win32_SerialPort -ErrorAction SilentlyContinue
                     if ($ports) {
                         $targetPort = $ports[0].DeviceID
                         try {
                             $sp = New-Object System.IO.Ports.SerialPort $targetPort, 115200, None, 8, One
-                            $sp.ReadTimeout = 800
+                            $sp.ReadTimeout = 600
                             $sp.Open()
-                            $endTime = (Get-Date).AddSeconds(4)
+                            $sp.DtrEnable = $false
+                            $sp.RtsEnable = $true
+                            Start-Sleep -Milliseconds 200
+                            $sp.RtsEnable = $false
+                            Start-Sleep -Milliseconds 100
+
+                            $endTime = (Get-Date).AddSeconds(6)
                             while ((Get-Date) -lt $endTime) {
                                 try {
                                     $line = $sp.ReadLine()
-                                    if ($line) { Write-Host "  [ESP32] $line" -ForegroundColor Green }
+                                    if ($line) {
+                                        Write-Host "  [ESP32] $line" -ForegroundColor Green
+                                        if ($line -match 'http://(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})') {
+                                            $detectedCameraIp = "http://$($Matches[1])"
+                                            $launchUrl = "$hostUrl/?camera=$detectedCameraIp"
+                                        }
+                                    }
                                 } catch {}
                             }
                             $sp.Close()
+                            if ($detectedCameraIp) {
+                                Write-Success "最新捕獲 IP: $detectedCameraIp (已更新網址，可按 [O] 開啟)"
+                            }
                         } catch {
                             Write-Fail "序列埠讀取提示：$($_.Exception.Message)"
                         }
