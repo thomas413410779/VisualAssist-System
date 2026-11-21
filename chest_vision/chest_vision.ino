@@ -51,8 +51,8 @@ const char* FALLBACK_AP_PASSWORD = "blindassist";
 #define MAX_AUDIO_SEC     6
 #define AUDIO_BUFFER_SIZE (AUDIO_SAMPLE_RATE * sizeof(int16_t) * MAX_AUDIO_SEC) // ~192 KB
 
-// IO0 on-board BOOT button
-#define TRIGGER_BUTTON_PIN 0
+// IO0 on-board BOOT button (設為 -1 停用，避免板載實體按鈕硬體卡鍵持續誤觸)
+#define TRIGGER_BUTTON_PIN -1
 
 // Layer 0 Hardware Emergency Brake Pins (Gravity: TX=44 -> Trig, RX=43 -> Echo, Alarm=3)
 #define ULTRASONIC_TRIG_PIN 44
@@ -67,6 +67,25 @@ static volatile unsigned long lastSonarDurationUs = 0;
 static volatile float lastRawDistCm = 400.0f;
 static uint32_t consecutiveSonarTimeouts = 0;
 static bool hardwareActive = true;
+
+// Temporal Debounce: 連續 3 幀 (3 * 25ms = 75ms) 讀數一致才確認急煞，避免單次雜訊突波誤報
+#define BRAKE_TRIGGER_DEBOUNCE_FRAMES 3
+#define BRAKE_RELEASE_DEBOUNCE_FRAMES 3
+static uint8_t brakeTriggerCount = 0;
+static uint8_t brakeReleaseCount = 0;
+
+// ---------- 超音波近身手勢虛擬按鈕 (Proximity Gesture) ----------
+#define GESTURE_CLOSE_DIST_CM     14.0f  // 手掌靠近門檻 (< 14cm)
+#define GESTURE_FAR_DIST_CM       22.0f  // 手掌移開門檻 (> 22cm)
+#define GESTURE_DEBOUNCE_MS       150    // 最小遮擋確認時間 (150ms，濾除甩手雜訊)
+#define GESTURE_LOCKOUT_MS        7000   // 超過 7 秒判定為衣物貼合，進入保護鎖定
+
+static bool gestureActive = false;
+static bool gestureCandidate = false;
+static uint32_t gestureStartTime = 0;
+static bool gestureLockoutActive = false;
+static uint32_t gestureClearStartTime = 0;
+static uint8_t gestureFarCount = 0;
 
 #define STREAM_BOUNDARY "blind-assist-boundary"
 static const char* STREAM_CONTENT_TYPE = "multipart/x-mixed-replace;boundary=" STREAM_BOUNDARY;
@@ -482,12 +501,15 @@ static esp_err_t statusHandler(httpd_req_t* request) {
   const uint32_t psramTotalKb = psramFound() ? (ESP.getPsramSize() / 1024) : 0;
   const uint32_t psramFreeKb = psramFound() ? (ESP.getFreePsram() / 1024) : 0;
 
-  char payload[576];
+  char payload[672];
+  const bool sonarHealthy = (consecutiveSonarTimeouts < 100);
   snprintf(payload, sizeof(payload),
            "{\"triggerCounter\":%lu,\"audioCounter\":%lu,\"isRecording\":%s,"
            "\"micReady\":%s,\"speakerReady\":%s,\"audioBytes\":%lu,"
            "\"ip\":\"%s\",\"ultrasonicCm\":%.1f,\"emergencyBrake\":%s,"
+           "\"gestureActive\":%s,"
            "\"sonarDurationUs\":%lu,\"trigPin\":%d,\"echoPin\":%d,"
+           "\"sonarTimeouts\":%lu,\"sonarHealthy\":%s,"
            "\"cameraReady\":%s,\"cameraModel\":\"%s\",\"cameraError\":\"%s\","
            "\"wifiMode\":\"%s\",\"wifiSsid\":\"%s\",\"wifiRssi\":%d,"
            "\"psramFound\":%s,\"psramTotalKb\":%lu,\"psramFreeKb\":%lu,"
@@ -501,9 +523,12 @@ static esp_err_t statusHandler(httpd_req_t* request) {
            inApMode ? WiFi.softAPIP().toString().c_str() : WiFi.localIP().toString().c_str(),
            chestDistanceCm,
            emergencyBrakeActive ? "true" : "false",
+           gestureActive ? "true" : "false",
            static_cast<unsigned long>(lastSonarDurationUs),
            currentTrigPin,
            currentEchoPin,
+           static_cast<unsigned long>(consecutiveSonarTimeouts),
+           sonarHealthy ? "true" : "false",
            cameraReady ? "true" : "false",
            cameraModel.c_str(),
            cameraLastError.c_str(),
@@ -519,11 +544,24 @@ static esp_err_t statusHandler(httpd_req_t* request) {
   return httpd_resp_send(request, payload, HTTPD_RESP_USE_STRLEN);
 }
 
+static esp_err_t triggerHandler(httpd_req_t* request) {
+  addCorsHeaders(request);
+  triggerCounter++;
+  playTone(1200, 50);
+  Serial.printf("[TRIGGER] Virtual shutter triggered via HTTP (/trigger, total: %lu)\n",
+                static_cast<unsigned long>(triggerCounter));
+  httpd_resp_set_type(request, "application/json; charset=utf-8");
+  char resp[64];
+  snprintf(resp, sizeof(resp), "{\"status\":\"TRIGGERED\",\"triggerCounter\":%lu}",
+           static_cast<unsigned long>(triggerCounter));
+  return httpd_resp_send(request, resp, HTTPD_RESP_USE_STRLEN);
+}
+
 static void startCameraServer() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = 80;
   config.ctrl_port = 32768;
-  config.max_uri_handlers = 10;
+  config.max_uri_handlers = 12;
   config.max_open_sockets = 7;
   config.lru_purge_enable = true;
 
@@ -533,6 +571,7 @@ static void startCameraServer() {
   httpd_uri_t playOptionsUri = { .uri = "/play", .method = HTTP_OPTIONS, .handler = optionsHandler, .user_ctx = nullptr };
   httpd_uri_t beepUri = { .uri = "/beep", .method = HTTP_GET, .handler = beepHandler, .user_ctx = nullptr };
   httpd_uri_t statusUri = { .uri = "/status", .method = HTTP_GET, .handler = statusHandler, .user_ctx = nullptr };
+  httpd_uri_t triggerUri = { .uri = "/trigger", .method = HTTP_GET, .handler = triggerHandler, .user_ctx = nullptr };
 
   if (httpd_start(&cameraHttpd, &config) == ESP_OK) {
     httpd_register_uri_handler(cameraHttpd, &captureUri);
@@ -541,7 +580,8 @@ static void startCameraServer() {
     httpd_register_uri_handler(cameraHttpd, &playOptionsUri);
     httpd_register_uri_handler(cameraHttpd, &beepUri);
     httpd_register_uri_handler(cameraHttpd, &statusUri);
-    Serial.println("[HTTP] Port 80 ready (/capture, /audio, /play, /beep, /status)");
+    httpd_register_uri_handler(cameraHttpd, &triggerUri);
+    Serial.println("[HTTP] Port 80 ready (/capture, /audio, /play, /beep, /status, /trigger)");
   }
 
   httpd_config_t streamConfig = HTTPD_DEFAULT_CONFIG();
@@ -729,13 +769,72 @@ static float readUltrasonicDistanceCm() {
   if (duration == 0) {
     consecutiveSonarTimeouts++;
     lastRawDistCm = 400.0f;
+    if (consecutiveSonarTimeouts == 100) {
+      Serial.println("[HEALTH ⚠️] 超聲波感測器連續 100 次超時！可能接線鬆脫或感測器失效。");
+    }
     return 400.0f;
+  }
+  if (consecutiveSonarTimeouts >= 100) {
+    Serial.println("[HEALTH ✅] 超聲波感測器已恢復正常測距回波！");
   }
   consecutiveSonarTimeouts = 0;
   const float dist = duration * 0.0343f / 2.0f;
   const float validDist = (dist > 1.0f && dist < 450.0f) ? dist : 400.0f;
   lastRawDistCm = validDist;
   return validDist;
+}
+
+static void updateUltrasonicGesture(float rawDist, uint32_t now) {
+  // 1. 若處於長時遮擋防呆鎖定 (Lockout)
+  if (gestureLockoutActive) {
+    if (rawDist > 25.0f) {
+      if (gestureClearStartTime == 0) gestureClearStartTime = now;
+      if (now - gestureClearStartTime > 1000) {
+        gestureLockoutActive = false;
+        gestureClearStartTime = 0;
+        Serial.println("[GESTURE] ✅ 探頭已淨空，手勢防呆鎖定解除");
+      }
+    } else {
+      gestureClearStartTime = 0;
+    }
+    gestureActive = false;
+    return;
+  }
+
+  // 2. 判斷手掌是否靠近 (< 14cm)
+  const bool handClose = (rawDist > 0.5f && rawDist < GESTURE_CLOSE_DIST_CM);
+
+  if (handClose) {
+    gestureFarCount = 0;
+    if (!gestureCandidate) {
+      gestureCandidate = true;
+      gestureStartTime = now;
+    } else {
+      const uint32_t holdDuration = now - gestureStartTime;
+      // 達到 150ms 門檻，啟動虛擬按鈕
+      if (holdDuration >= GESTURE_DEBOUNCE_MS && !gestureActive) {
+        gestureActive = true;
+        playTone(900, 30);
+        Serial.println("[GESTURE] 🖐️ 手勢捕捉確認 (< 14cm)");
+      }
+      // 遮擋超過 7 秒防呆
+      if (holdDuration > GESTURE_LOCKOUT_MS) {
+        gestureActive = false;
+        gestureCandidate = false;
+        gestureLockoutActive = true;
+        playTone(400, 200);
+        Serial.println("[GESTURE] ⚠️ 遮擋超過 7 秒，防呆鎖定已啟動");
+      }
+    }
+  } else if (rawDist >= GESTURE_FAR_DIST_CM) {
+    gestureFarCount++;
+    if (gestureFarCount >= 2) {
+      if (gestureActive || gestureCandidate) {
+        gestureActive = false;
+        gestureCandidate = false;
+      }
+    }
+  }
 }
 
 static void updateLayer0EmergencyBrake() {
@@ -745,20 +844,41 @@ static void updateLayer0EmergencyBrake() {
     lastSonarSampleMs = now;
     const float rawDist = readUltrasonicDistanceCm();
     chestDistanceCm = (rawDist < chestDistanceCm) ? rawDist : (0.7f * chestDistanceCm + 0.3f * rawDist);
-    emergencyBrakeActive = (chestDistanceCm < EMERGENCY_BRAKE_DIST_CM);
+
+    // 更新超音波近身手勢狀態
+    updateUltrasonicGesture(rawDist, now);
+
+    // 時間維度滑動濾波 (Temporal Debounce)：
+    // 雙區仲裁：近身手勢操作區 (< 14cm) 或安全區 (>= 80cm) 抑制急煞警報；
+    // 僅在環境障礙急煞區 (14cm ~ 80cm) 且未在手勢/錄音中才確認急煞
+    if (rawDist >= GESTURE_CLOSE_DIST_CM && rawDist < EMERGENCY_BRAKE_DIST_CM && !gestureActive && !isRecording) {
+      brakeTriggerCount++;
+      brakeReleaseCount = 0;
+      if (brakeTriggerCount >= BRAKE_TRIGGER_DEBOUNCE_FRAMES) {
+        emergencyBrakeActive = true;
+        brakeTriggerCount = BRAKE_TRIGGER_DEBOUNCE_FRAMES; // 飽和防止溢位
+      }
+    } else {
+      brakeReleaseCount++;
+      brakeTriggerCount = 0;
+      if (brakeReleaseCount >= BRAKE_RELEASE_DEBOUNCE_FRAMES) {
+        emergencyBrakeActive = false;
+        brakeReleaseCount = BRAKE_RELEASE_DEBOUNCE_FRAMES; // 飽和防止溢位
+      }
+    }
 
     // Event-driven state change log (no polling spam)
     if (emergencyBrakeActive != lastBrakeState) {
       lastBrakeState = emergencyBrakeActive;
       if (emergencyBrakeActive) {
-        Serial.printf("[BRAKE] 🚨 Emergency brake triggered: %.1f cm (< 80cm)\n", chestDistanceCm);
+        Serial.printf("[BRAKE] 🚨 Emergency brake confirmed (debounced 75ms): %.1f cm (< 80cm)\n", chestDistanceCm);
       } else {
         Serial.printf("[BRAKE] Emergency brake cleared: %.1f cm\n", chestDistanceCm);
       }
     }
   }
 
-  if (emergencyBrakeActive) {
+  if (emergencyBrakeActive && !gestureActive && !isRecording) {
     if (now - lastAlarmToggleMs >= 35) {
       lastAlarmToggleMs = now;
       alarmState = !alarmState;
@@ -781,9 +901,11 @@ void setup() {
                   ESP.getPsramSize() / 1024, ESP.getFreePsram() / 1024, ESP.getFreeHeap() / 1024);
   }
 
-  pinMode(TRIGGER_BUTTON_PIN, INPUT_PULLUP);
-  gpio_pullup_en(GPIO_NUM_0);
-  gpio_pulldown_dis(GPIO_NUM_0);
+  if (TRIGGER_BUTTON_PIN >= 0) {
+    pinMode(TRIGGER_BUTTON_PIN, INPUT_PULLUP);
+    gpio_pullup_en((gpio_num_t)TRIGGER_BUTTON_PIN);
+    gpio_pulldown_dis((gpio_num_t)TRIGGER_BUTTON_PIN);
+  }
 
   pinMode(currentTrigPin, OUTPUT);
   pinMode(currentEchoPin, INPUT);
@@ -808,8 +930,9 @@ void loop() {
 
   const uint32_t now = millis();
 
-  // Button debouncing
-  const bool rawPressed = (digitalRead(TRIGGER_BUTTON_PIN) == LOW);
+  // Button debouncing (結合實體按鈕與超音波近身手勢)
+  const bool physicalPressed = (TRIGGER_BUTTON_PIN >= 0) ? (digitalRead(TRIGGER_BUTTON_PIN) == LOW) : false;
+  const bool rawPressed = physicalPressed || gestureActive;
   if (rawPressed != lastRawButtonState) {
     lastDebounceMs = now;
   }
@@ -863,8 +986,12 @@ void loop() {
         digitalWrite(currentTrigPin, LOW);
         Serial.printf("[CMD] Pins set: Trig=GPIO%d, Echo=GPIO%d\n", currentTrigPin, currentEchoPin);
       }
+    } else if (cmd.equalsIgnoreCase("trigger") || cmd.equalsIgnoreCase("t")) {
+      triggerCounter++;
+      playTone(1200, 50);
+      Serial.printf("[TRIGGER] Manual trigger via serial (%lu)\n", static_cast<unsigned long>(triggerCounter));
     } else if (cmd.equalsIgnoreCase("help")) {
-      Serial.println("[HELP] Commands: swap | stop | start | status | pins <t> <e> | sleep");
+      Serial.println("[HELP] Commands: swap | stop | start | status | trigger | pins <t> <e> | sleep");
     }
   }
 

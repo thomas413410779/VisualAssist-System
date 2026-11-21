@@ -6,7 +6,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./INTEGRATION_GUIDE.md)
 [![Platform: ESP32--S3](https://img.shields.io/badge/Platform-ESP32--S3-red.svg)](https://www.espressif.com/)
-[![Framework: React 19](https://img.shields.io/badge/Mobile-React_19_+_Capacitor-61dafb.svg)](https://react.dev/)
+[![Framework: React 19 + PWA](https://img.shields.io/badge/Mobile-React_19_+_PWA-61dafb.svg)](https://react.dev/)
 [![Inference: ONNX Runtime](https://img.shields.io/badge/Inference-ONNX_Runtime_Web-blueviolet.svg)](https://onnxruntime.ai/)
 
 </div>
@@ -65,7 +65,7 @@
 VisualAssist_System/
 ├── chest_vision/              # 胸前穿戴韌體 (ESP32-S3)
 │   └── chest_vision.ino       # 相機驅動、MJPEG 串流、超音波取樣、急煞中斷
-├── mobile_app/                # 手機端邊緣運算 App (React + Capacitor)
+├── mobile_app/                # 手機端邊緣運算 App (React 19 + PWA 離線應用)
 │   ├── src/
 │   │   ├── services/
 │   │   │   ├── cameraService.ts   # 相機串流、遙測狀態與控制協定

@@ -86,6 +86,7 @@ function App() {
   // Layer 1: Edge YOLO Detection State (預設暫停，避免自動持續分析)
   const [trackingEnabled, setTrackingEnabled] = useState(false);
   const [detections, setDetections] = useState<Detection[]>([]);
+  const detectionsRef = useRef<Detection[]>([]);
   const edgeDetectorRef = useRef<LocalYoloEdgeDetector | null>(null);
   const lastSpokenThreatRef = useRef<{ label: string; threatLevel: ThreatLevel; timestamp: number }>({
     label: '',
@@ -93,6 +94,7 @@ function App() {
     timestamp: 0,
   });
   const clearObstacleCounterRef = useRef<number>(0);
+  const lastSonarHealthyRef = useRef<boolean>(true);
 
   // Layer 2: Cloud Gemini Description & Voice Q&A State
   const [describing, setDescribing] = useState(false);
@@ -162,6 +164,7 @@ function App() {
   useEffect(() => {
     if (!trackingEnabled) {
       setDetections([]);
+      detectionsRef.current = [];
       return;
     }
 
@@ -178,6 +181,7 @@ function App() {
           // 僅在 demoMode 開啟時才允許模擬假目標，避免真實相機無故捏造幽靈行人
           const results = await detector.detect(img, demoMode);
           setDetections(results);
+          detectionsRef.current = results;
 
           // 記錄推論耗時，供 UI 顯示效能資訊
           const inferMs = detector.getLastInferenceMs();
@@ -427,17 +431,47 @@ function App() {
 
         const ultrasonicCm = status.ultrasonicCm ?? 400;
         const emergencyBrake = Boolean(status.emergencyBrake || ultrasonicCm < 80);
+        const sonarTimeouts = status.sonarTimeouts ?? 0;
+        const isSonarHealthy = status.sonarHealthy !== false && sonarTimeouts < 100;
 
         setChestTelemetry({
           ultrasonicCm,
           emergencyBrake,
           connected: true,
           lastUpdated: Date.now(),
+          sonarHealthy: isSonarHealthy,
+          sonarTimeouts,
         });
 
-        // 第 0 層急煞僅更新狀態與胸前板警示，不透過電腦喇叭持續轟炸播報
+        // 機制 3：感測器健康心跳監控 (Sensor Health Monitor)
+        if (lastSonarHealthyRef.current && !isSonarHealthy) {
+          lastSonarHealthyRef.current = false;
+          setLastEvent('⚠️ 超聲波感測器已離線，系統自動切換為純視覺降級模式！');
+          announceFeedback('警告：超聲波感測器已離線，切換為純視覺降級模式', 350, [120, 60, 120]);
+        } else if (!lastSonarHealthyRef.current && isSonarHealthy) {
+          lastSonarHealthyRef.current = true;
+          setLastEvent('✅ 超聲波感測器已恢復連線，雙模防護已就緒。');
+          announceFeedback('超聲波感測器已恢復連線，雙模防護已就緒', 750, [50, 50]);
+        }
+
+        // 機制 2：語音層次分流 (Audio Stratification)
+        // 超聲波負責耳朵聽到的急促音效與震動；YOLO 負責補充語意與類別
         if (emergencyBrake && !lastUrgentBrakeRef.current) {
           setLastEvent('第 0 層急煞：胸前硬體偵測距離小於 80cm！');
+          playTone(1200, 160);
+          if (typeof navigator !== 'undefined' && navigator.vibrate) {
+            navigator.vibrate([100, 50, 100]);
+          }
+
+          // 檢查中央安全錐是否有 YOLO 目標，若無則提示未辨識障礙（如玻璃門、白牆）
+          const centerThreat = detectionsRef.current.find(
+            (item) => item.zone === 'center' && (item.threatLevel === 'critical' || item.threatLevel === 'warning')
+          );
+          if (centerThreat) {
+            speak(`注意，前方近處有${centerThreat.chineseLabel}`, 'urgent');
+          } else {
+            speak('注意，前方有障礙物，請停步', 'urgent');
+          }
         }
         lastUrgentBrakeRef.current = emergencyBrake;
 
@@ -909,13 +943,23 @@ function App() {
         </div>
       </section>
 
-      {/* 第 0 層：前方即時距離與急煞狀態條 (可點擊播報) */}
+      {/* 第 0 層：前方即時距離與急煞狀態條 (可點擊播報，支援感測器健康監控降級提示) */}
       <section
-        className={`accessible-distance-bar ${chestTelemetry.emergencyBrake ? 'critical' : 'safe'}`}
+        className={`accessible-distance-bar ${
+          !chestTelemetry.sonarHealthy
+            ? 'degraded'
+            : chestTelemetry.emergencyBrake
+            ? 'critical'
+            : 'safe'
+        }`}
         role="region"
         aria-live="polite"
         tabIndex={0}
         onClick={() => {
+          if (!chestTelemetry.sonarHealthy) {
+            announceFeedback('超聲波感測器已離線，目前由手機視覺模型提供降級避障防護', 450, [100, 50, 100]);
+            return;
+          }
           const cm = Math.round(chestTelemetry.ultrasonicCm);
           const stateStr = chestTelemetry.emergencyBrake ? '急煞危險，距離過近' : '前方安全';
           announceFeedback(`前方障礙物距離約 ${cm} 公分，${stateStr}`, chestTelemetry.emergencyBrake ? 300 : 700, [60]);
@@ -923,6 +967,10 @@ function App() {
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();
+            if (!chestTelemetry.sonarHealthy) {
+              announceFeedback('超聲波感測器已離線，目前由手機視覺模型提供降級避障防護', 450, [100, 50, 100]);
+              return;
+            }
             const cm = Math.round(chestTelemetry.ultrasonicCm);
             const stateStr = chestTelemetry.emergencyBrake ? '急煞危險，距離過近' : '前方安全';
             announceFeedback(`前方障礙物距離約 ${cm} 公分，${stateStr}`, chestTelemetry.emergencyBrake ? 300 : 700, [60]);
@@ -931,10 +979,12 @@ function App() {
       >
         <div className="distance-info">
           <span className="distance-icon">
-            {chestTelemetry.emergencyBrake ? '🚨' : '🟢'}
+            {!chestTelemetry.sonarHealthy ? '⚠️' : chestTelemetry.emergencyBrake ? '🚨' : '🟢'}
           </span>
           <span className="distance-text">
-            {chestTelemetry.emergencyBrake
+            {!chestTelemetry.sonarHealthy
+              ? `超聲波離線 · 純視覺降級模式中 (${chestTelemetry.sonarTimeouts} 次超時)`
+              : chestTelemetry.emergencyBrake
               ? `急煞警報！前方障礙小於 80cm！(${Math.round(chestTelemetry.ultrasonicCm)} cm)`
               : `前方安全 · 超音波距離：${Math.round(chestTelemetry.ultrasonicCm)} cm`}
           </span>

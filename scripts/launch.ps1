@@ -1,4 +1,4 @@
-# ==============================================================================
+﻿# ==============================================================================
 # 穿戴式視覺輔助系統 (VisualAssist System / DEWANS)
 # 全新電腦一鍵自動化環境配置、依賴套件安裝與前端啟動核心腳本
 # ==============================================================================
@@ -417,7 +417,7 @@ if ($detectedCameraIp) {
 }
 Write-Host ""
 Write-Host "  * 提示：" -ForegroundColor Yellow
-Write-Host "    - 您可於手機瀏覽器輸入上述「手機同網網址」，即可在手機上體驗邊緣 YOLO 輔助避障" -ForegroundColor Gray
+Write-Host "    - 您可於手機瀏覽器輸入上述「手機同網網址」，點擊「新增至主畫面」即可安裝為全螢幕 PWA 離線 App（免安裝 APK）" -ForegroundColor Gray
 Write-Host "    - 接線模式：若有插上 ESP32-S3，本機已自動供電並維持通訊" -ForegroundColor Gray
 Write-Host ""
 Write-Host "  [快捷操作選單]" -ForegroundColor Cyan

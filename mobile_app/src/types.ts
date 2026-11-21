@@ -12,6 +12,8 @@ export type ChestTelemetry = {
   emergencyBrake: boolean;
   connected: boolean;
   lastUpdated: number;
+  sonarHealthy: boolean;
+  sonarTimeouts: number;
 };
 
 export const DEFAULT_CHEST_TELEMETRY: ChestTelemetry = {
@@ -19,4 +21,6 @@ export const DEFAULT_CHEST_TELEMETRY: ChestTelemetry = {
   emergencyBrake: false,
   connected: false,
   lastUpdated: 0,
+  sonarHealthy: true,
+  sonarTimeouts: 0,
 };

@@ -21,7 +21,7 @@
 
 ## 2. YOLO 各世代橫向技術評估
 
-針對目前業界主流的 YOLO 系列演算法，進行適用於手機 Web/Hybrid 跨平台（React + Capacitor + ONNX Runtime Web）環境之評估：
+針對目前業界主流的 YOLO 系列演算法，進行適用於手機 Web/PWA（React 19 + PWA + ONNX Runtime Web）環境之評估：
 
 | 評估項目 | YOLOv5 (Ultralytics) | YOLOv7 (Chien-Yao Wang) | **YOLOv8 (Ultralytics)** | **YOLO11 (Ultralytics 最新)** |
 | :--- | :--- | :--- | :--- | :--- |
@@ -98,7 +98,7 @@
 
 ### 技術棧整合：
 * **推論核心**：`onnxruntime-web` (WebAssembly + WebGL/WebGPU 跨平台推論)
-* **打包框架**：Capacitor 跨平台原生封裝
+* **打包框架**：現代化 PWA (漸進式網頁應用，支援全螢幕安裝與離線快取)
 * **模型放置路徑**：`mobile_app/public/models/yolov8n.onnx`
 
 ### 模型產生與導出步驟（開發者參考）：

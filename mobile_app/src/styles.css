@@ -656,6 +656,12 @@ button:hover:not(:disabled) { transform: translateY(-1px); }
   animation: criticalPulse 1.2s infinite;
 }
 
+.accessible-distance-bar.degraded {
+  background: linear-gradient(135deg, #78350f, #451a03);
+  border: 2px solid #f59e0b;
+  color: #fef3c7;
+}
+
 .distance-info {
   display: flex;
   align-items: center;

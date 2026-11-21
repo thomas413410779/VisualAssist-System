@@ -28,8 +28,7 @@ VisualAssist_System/
 └── mobile_app/
     ├── package.json
     ├── pnpm-lock.yaml
-    ├── capacitor.config.ts
-    ├── vite.config.ts
+    ├── vite.config.ts (PWA 配置)
     ├── tsconfig*.json
     ├── index.html
     ├── .env.example
@@ -92,15 +91,15 @@ cp .env.example .env.local
 pnpm run dev
 ```
 
-產生 Android 原生專案的流程如下：
+PWA 離線漸進式網頁應用打包流程如下：
 
 ```bash
 cd mobile_app
 pnpm run build
-pnpm exec cap add android
-pnpm run cap:sync
-pnpm exec cap open android
+pnpm run preview
 ```
+
+手機連上同一區域網路後，在瀏覽器打開網址並點擊 **「新增至主畫面」**，即可免經 Android Studio 編譯安裝，直接作為獨立全螢幕離線 App 運行（支援 50MB YOLO 模型與 WASM 完整快取、震動與音訊）。
 
 手機 App 不應在 UI 端永久保存影像；本原型收到 Gemini 文字後也不會將照片寫入檔案。
 

@@ -34,6 +34,11 @@ export type ChestStatus = {
   ip: string;
   ultrasonicCm?: number;
   emergencyBrake?: boolean;
+  sonarDurationUs?: number;
+  trigPin?: number;
+  echoPin?: number;
+  sonarTimeouts?: number;
+  sonarHealthy?: boolean;
   cameraReady?: boolean;
   cameraModel?: string;
   wifiRssi?: number;
